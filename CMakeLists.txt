@@ -41,7 +41,7 @@ if(",${CMAKE_SOURCE_DIR}," STREQUAL ",${CMAKE_BINARY_DIR},")
 endif()
 
 option(PERFORM_STYLE_CHECKS
-	"check coding style, license headers (requires perl)" ON)
+	"check coding style, license headers (requires perl)" OFF)
 option(BUILD_TESTS "build and enable tests" ON)
 option(BUILD_EXAMPLES "build examples" ON)
 option(TREAT_WARNINGS_AS_ERRORS

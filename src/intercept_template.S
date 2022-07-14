@@ -94,7 +94,7 @@
 /* Some helpers to save registers */
 
 .macro intercept_asm_wrapper_save_regs
-stdu r1, -80(r1)	# Stack space for registers
+stdu r1, -88(r1)	# Stack space for registers // 80 has issues with clone r31
 std r0,40(r1)
 mflr r0
 std r0, 8(r1)
@@ -132,7 +132,7 @@ mtctr r0
 ld r0, 8(r1)
 mtlr r0
 ld r0, 40(r1)
-addi r1,r1, 80
+addi r1,r1, 88  // 80 has issues with r31 in clone
 .endm
 
 /* Helper to load a 64 bit immediate into a register */
@@ -192,7 +192,7 @@ intercept_asm_wrapper_wrapper_level1_addr:
 3:
     ld r0, 88(r1)
     mtcr r0
-    addi r1, r1, 392
+    addi r1, r1,  392
     intercept_asm_wrapper_restore_regs
 e:
     LOAD_REG_IMMEDIATE(r4,0) // We need to jump to the syscall again
