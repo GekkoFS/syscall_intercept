@@ -119,7 +119,7 @@ create_absolute_jumptr(unsigned char *from, void *to)
 
 /// Nota : La primera 
 	uintptr_t delta32 = (uintptr_t)to;
-	*(unsigned *)from = (unsigned)0xf9e1ffe0;// 8; // std r15,-8(r1)  => deletes the r31 stored inside clone, we may have sideeffects here
+	*(unsigned *)from = (unsigned)0xf9e1ffd0;// 8; // std r15,-8(r1)  => deletes the r31 stored inside clone, we may have sideeffects here
 	from += 4;
 	*(unsigned *)from = (unsigned)0x39E00000; // 39 (li) 3D (lis)
 //	*(unsigned *)from |= (((((delta32 >> 48))))& 0xFFFF);
@@ -139,7 +139,7 @@ create_absolute_jumptr(unsigned char *from, void *to)
 	from += 4;
 	*(unsigned *)from = (unsigned)0x7de903a6;
 	from += 4;
-	*(unsigned *)from = (unsigned)0xe9e1ffe0;// 8;  // ld r15, -8(r1) (restore 31)
+	*(unsigned *)from = (unsigned)0xe9e1ffd0;// 8;  // ld r15, -8(r1) (restore 31)
 	from += 4;
 	*(unsigned *)from = (unsigned)0x4e800420;
 	from += 4;

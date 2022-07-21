@@ -54,7 +54,11 @@
 #define NR_SPR		4
 
 #define SAVE_AREA	((NR_GPR + NR_SPR) * 8)
-#define CALLER_FRAME	376
+// 288 bytes for the stack frame
+#define CALLER_FRAME	384
+// 376 - 288 = 88 bytes 
+// 384 - 288 = 96 bytes
+// 512 - 288 = 320 bytes
 
 #define STACK_FRAME	SAVE_AREA
 
@@ -144,11 +148,11 @@ intercept_wrapper:
 
     cmpdi r30 ,1
     beq 0f
-    addi r3, r1, 368 #368
+    addi r3, r1, CALLER_FRAME-8 #368
     bl intercept_routine
     b 1f
 
-0:  addi r3, r1, 368  // Put in R3 the @ of the context
+0:  addi r3, r1, CALLER_FRAME-8  // Put in R3 the @ of the context
     bl intercept_routine_post_clone
     nop
 

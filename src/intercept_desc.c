@@ -308,8 +308,8 @@ find_jumps_in_section_syms(struct intercept_desc *desc, Elf64_Shdr *section,
 		if (syms[i].st_shndx != desc->text_section_index)
 			continue; /* it is not in the text section */
 
-		debug_dump("jump target: %lx\n",
-			(unsigned long)syms[i].st_value);
+	//	debug_dump("jump target: %lx\n",
+	//		(unsigned long)syms[i].st_value);
 
 		unsigned char *address = desc->base_addr + syms[i].st_value;
 
@@ -357,9 +357,9 @@ find_jumps_in_section_rela(struct intercept_desc *desc, Elf64_Shdr *section,
 			case R_X86_64_RELATIVE64:
 				/* Relocation type: "Adjust by program base" */
 
-				debug_dump("jump target: %lx\n",
-					(unsigned long)syms[i].r_addend);
-
+		//		debug_dump("jump target: %lx\n",
+		//			(unsigned long)syms[i].r_addend);
+				;
 				unsigned char *address =
 					desc->base_addr + syms[i].r_addend;
 
