@@ -82,7 +82,7 @@
 
 /* The size of a trampoline jump */
 enum { TRAMPOLINE_SIZE = 28 + 8 - 8};
-
+enum { END_WRAPPER_INSTR = 7 }; 
 static void create_wrapper(struct patch_desc *patch, unsigned char **dst);
 
 /*
@@ -113,33 +113,30 @@ create_absolute_jump(unsigned char *from, void *to)
  *
  * and do a bctr
  */
+
 static unsigned char *
 create_absolute_jumptr(unsigned char *from, void *to)
 {
-
-/// Nota : La primera 
+/// We store r10 in pos 56 (r1), that is 40 in the asm_wrapper_space (-96 stack)
 	uintptr_t delta32 = (uintptr_t)to;
-	*(unsigned *)from = (unsigned)0xf9e1ffd0;// 8; // std r15,-8(r1)  => deletes the r31 stored inside clone, we may have sideeffects here
+
+	*(unsigned *)from = (unsigned)0xf961ffd8;// std r30
 	from += 4;
-	*(unsigned *)from = (unsigned)0x39E00000; // 39 (li) 3D (lis)
-//	*(unsigned *)from |= (((((delta32 >> 48))))& 0xFFFF);
-//	from += 4;
-//	*(unsigned *)from = (unsigned)0x61EF0000;
-	*(unsigned *)from |= (((((delta32 >> 32))))& 0xFFFF);
+	*(unsigned *)from = (unsigned)0x39607fff; // 39 (li) 3D (lis) // 60 -> 40
 	from += 4;
 
-	*(unsigned *)from = (unsigned)0x79EF07C6;
+	*(unsigned *)from = (unsigned)0x796b07c6;  // 6b -> 4a
 
 	from += 4;
-	*(unsigned *)from = (unsigned)0x65EF0000; // 61 ori 65 oris
+	*(unsigned *)from = (unsigned)0x656b0000; // 61 ori 65 oris
 	*(unsigned *)from |= (((((delta32 >> 16))))& 0xFFFF);
 	from += 4;
-	*(unsigned *)from = (unsigned)0x61EF0000;
+	*(unsigned *)from = (unsigned)0x616b0000;
 	*(unsigned *)from |= (((((delta32))))& 0xFFFF);
 	from += 4;
-	*(unsigned *)from = (unsigned)0x7de903a6;
+	*(unsigned *)from = (unsigned)0x7d6903a6;
 	from += 4;
-	*(unsigned *)from = (unsigned)0xe9e1ffd0;// 8;  // ld r15, -8(r1) (restore 31)
+	*(unsigned *)from = (unsigned)0xe961ffd8;// ld r30,-16 (r1) We use the same position as clone
 	from += 4;
 	*(unsigned *)from = (unsigned)0x4e800420;
 	from += 4;
@@ -234,9 +231,10 @@ create_patch_wrappers(struct intercept_desc *desc, unsigned char **dst)
 {
 
 	for (unsigned patch_i = 0; patch_i < desc->count; ++patch_i) {
+	
 		struct patch_desc *patch = desc->items + patch_i;
-		debug_dump("patching %s:0x%lx\n", desc->path,
-				patch->syscall_addr - desc->base_addr);
+		debug_dump("patching  %d -- %s:0x%lx -- 0x%p (0x%lx)\n", patch_i, desc->path,
+				patch->syscall_addr - desc->base_addr, (void*)patch->syscall_addr, patch->syscall_offset);
 			/*
 			 * Count the number of overwritable bytes
 			 * in the variable length.
@@ -267,7 +265,8 @@ create_patch_wrappers(struct intercept_desc *desc, unsigned char **dst)
 		}
 
 		mark_jump(desc, patch->return_address);
-
+		
+		
 		create_wrapper(patch, dst);
 	}
 
@@ -283,6 +282,7 @@ extern unsigned char intercept_asm_wrapper_patch_desc_addr;
 extern unsigned char intercept_asm_wrapper_wrapper_level1_addr;
 extern unsigned char intercept_wrapper;
 extern unsigned char intercept_asm_wrapper_r2_load_addr;
+
 
 size_t asm_wrapper_tmpl_size;
 static ptrdiff_t o_patch_desc_addr;
@@ -314,7 +314,6 @@ init_patcher(void)
 	o_wrapper_level1_addr =
 		&intercept_asm_wrapper_wrapper_level1_addr - begin;
 	o_r2_load_addr = &intercept_asm_wrapper_r2_load_addr - begin;
-
 }
 
 void
@@ -365,14 +364,14 @@ create_wrapper(struct patch_desc *patch, unsigned char **dst)
 	create_movabs_p1(*dst + o_wrapper_level1_addr,
 		(uintptr_t)&intercept_wrapper);
 
-	*dst += asm_wrapper_tmpl_size - 7 * 4;
+	*dst += asm_wrapper_tmpl_size - END_WRAPPER_INSTR * 4;
 	if (check_relative_jump(*dst, patch->return_address)) {
 		create_jump(1, *dst, patch->return_address);
 		*dst += 4;
 	} else {
 		debug_dump("Check relative NEED A LONG JUMP => TOC?!\n");
 		create_movabs_p1(*dst, (uintptr_t)patch->return_address);
-		*dst += 7 * 4;
+		*dst += END_WRAPPER_INSTR * 4;
 	}
 }
 
@@ -401,6 +400,19 @@ activate_patches(struct intercept_desc *desc)
 
 	for (unsigned i = 0; i < desc->count; ++i) {
 		const struct patch_desc *patch = desc->items + i;
+		// The list of syscalls that need to be patched can be obtained with gdb printing the patch information in this function
+		// Each library starts from 0, and increases for each "sc" instruction
+		// Another way could be patch using symbol information but for now is out of the scope
+		// 
+		// You will only keep functions that use or generate fds
+		// Removing these lines allow working 99% code, except gekkofs
+		// libc in order: libc_sigaction, mmap, munmap, mprotect, clone, clone, 
+		// clone, mmap, and other functions could be left out of patching avoiding issues and reducing interferences
+		// But for now only libc_sigaction has issues
+			if ((strcmp(patch->containing_lib_path, "/lib64/libc.so.6")==0) && (i== 27 /* || i == 537 || i == 538 || i == 508 || i == 509 || i == 510 */ )  ) {
+					continue;} 
+		if ((strcmp(patch->containing_lib_path,"/lib64/libpthread.so.0")==0) && ((i <= 150 || i >= 202) ))
+	      continue; 
 
 		if (patch->dst_jmp_patch < desc->text_start ||
 			patch->dst_jmp_patch > desc->text_end)

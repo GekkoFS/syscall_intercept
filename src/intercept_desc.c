@@ -517,6 +517,7 @@ crawl_text(struct intercept_desc *desc)
 		 * right now.
 		 */
 		if (result.is_syscall) {
+			
 			struct patch_desc *patch = add_new_patch(desc);
 
 			patch->containing_lib_path = desc->path;
@@ -525,7 +526,7 @@ crawl_text(struct intercept_desc *desc)
 				(desc->text_start - desc->text_offset);
 
 			assert(syscall_offset >= 0);
-
+			
 			patch->syscall_offset = (unsigned long)syscall_offset;
 		}
 

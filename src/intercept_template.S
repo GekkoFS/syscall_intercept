@@ -40,6 +40,7 @@
     - Some syscalls (mmap) changes r10,r11,r12
     - Results are placed on r3
     - If the syscall is not successful CR0.SL is 1
+	- Clone stores 29-30-31 in the stack (-8,-16,-24)
 */
 
 .global intercept_asm_wrapper_tmpl;
@@ -71,9 +72,13 @@
 #define r31 31
 
 #define r19 19
-#define STACK 96
-#define CCRPOS 96
-#define EXTRA 816 
+#define STACK 480
+//#define CCRPOS -192
+#define STACK_FRAME (288+STACK)
+// STACK_FRAME from intercept_wrapper.s
+#define CCRPOS -STACK_FRAME+88
+#define CONTEXT -STACK_FRAME+80
+
 // 392
 .text
 
@@ -99,39 +104,34 @@
 
 .macro intercept_asm_wrapper_save_regs
 stdu r1, -STACK(r1)	# Stack space for registers // 80 has issues with clone r31
-std r0,40(r1)
-mflr r0
-std r0, 8(r1)
-mfctr r0			# CR is not stored as needs to be recovered
-std r0, 16(r1)
+//std r10,40(r1)
+
+mflr r11
+
+std r11, 8(r1)
+.cfi_offset lr, 8
+mfctr r11			# CR is not stored as needs to be recovered
+std r11, 16(r1)
 std r2, 24(r1)
 std r3, 32(r1)		# This is not needed
 std r4, 48(r1)
-std r30, 56(r1)
-std r31, 64(r1)
-# std r19, 72(r1)   # This overwrites some stack variable (r29)
-
-
-ld r0, 40(r1)		# Reload r0, syscall number
-stdu r1, -EXTRA(r1)   # Add extra space for next steps
 .endm
 
 .macro intercept_asm_wrapper_restore_regs
 # We need a addi r1,r1, 392 we will do externally
-# ld r19, 72(r1)
-ld r31, 64(r1)
-ld r30, 56(r1)
+
 ld r4, 48(r1)
 #    ld r3, 32(r1)  // Results do not restore
 ld r2, 24(r1)
 
 
-ld r0, 16(r1)
-mtctr r0
-ld r0, 8(r1)
-mtlr r0
-ld r0, 40(r1)
+ld r11, 16(r1)
+mtctr r11
+ld r11, 8(r1)
+mtlr r11
+ld r11, 40(r1)
 addi r1,r1, STACK  // 80 has issues with r31 in clone
+
 .endm
 
 /* Helper to load a 64 bit immediate into a register */
@@ -140,21 +140,21 @@ addi r1,r1, STACK  // 80 has issues with r31 in clone
  	rldicr  reg,reg,32,31;		\
 	oris    reg,reg,(expr)@high;	\
  	ori     reg,reg,(expr)@l;
-
+.cfi_startproc
 intercept_asm_wrapper_tmpl:
 	intercept_asm_wrapper_save_regs
-	li r30, 0 # Intercept routine in r30
+	li r11, 0 # Intercept routine in r30
 intercept_asm_wrapper_r2_load_addr:
 # We need to save dnamically the r2 (TOC) to allow global variable
 	LOAD_REG_IMMEDIATE(r2, 0)
 k: # We don't need to reload the R2 (clones)
 intercept_asm_wrapper_patch_desc_addr:
 	LOAD_REG_IMMEDIATE(r4,0)
-	std r4, 80(r1)	 # We store the address in the stack
+	std r4, CONTEXT(r1)	 # We store the address in the stack
 intercept_asm_wrapper_wrapper_level1_addr:
     LOAD_REG_IMMEDIATE(r4,0)
     mtlr r4
-    ld r4, 48+EXTRA(r1)
+	ld r4, 48(r1)
     blrl
 	/*
 	 *
@@ -167,39 +167,36 @@ intercept_asm_wrapper_wrapper_level1_addr:
     beq 2f
     cmpdi r4,1
     beq 3f
-#    cmpdi r4,2
-#    beq 1f
+
 1:
 	/* execute the clone syscall in its original context */
-	ld r0, CCRPOS(r1)
-	mtcr r0     // We restore the syscall CR (error code)
-	addi r1, r1, EXTRA
+	ld r11, CCRPOS(r1)
+	mtcr r11     // We restore the syscall CR (error code)
 	ld r3, 32(r1) // We need to reload r3, syscall number
 	intercept_asm_wrapper_restore_regs
 	sc
 	intercept_asm_wrapper_save_regs // Save regs
-    li r30, 1
+    li r11, 1
 	b intercept_asm_wrapper_r2_load_addr // Reload the TOC for child
 2:
-	ld r0, CCRPOS(r1)
-	mtcr r0
-	addi r1, r1, EXTRA
+	ld r11, CCRPOS(r1)
+	mtcr r11
 	ld r3, 32(r1)
 	intercept_asm_wrapper_restore_regs
 	sc
 	b e
 3:
-    ld r0, CCRPOS(r1)
-    mtcr r0
-    addi r1, r1,  EXTRA
+    ld r11, CCRPOS(r1)
+    mtcr r11
     intercept_asm_wrapper_restore_regs
 e:
-    LOAD_REG_IMMEDIATE(r4,0) // We need to jump to the syscall again
+	LOAD_REG_IMMEDIATE(r4,0) // We need to jump to the syscall again
     mtctr r4
-    ld r4, 32(r1)
+    ld r4, 48(r1)
     bctr
 intercept_asm_wrapper_tmpl_end:
 	/*
 	 * This template must be appended here with a
 	 * jump back to the intercepted code.
 	 */
+.cfi_endproc

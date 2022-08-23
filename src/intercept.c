@@ -407,11 +407,6 @@ should_patch_object(uintptr_t addr, const char *path)
 		return true;
 	}
 	
-	/*if (str_match(name, len, event)) {
-		debug_dump(" - libevent found\n");
-		return false;
-	}
-	*/
 	if (str_match(name, len, pthr)) {
 		debug_dump(" - libpthread found\n");
 		return true;
@@ -695,6 +690,8 @@ intercept_routine(struct context *context)
 	intercept_log_syscall(patch, &desc, UNKNOWN, 0);
 
 	if (intercept_hook_point != NULL)
+	{
+	
 		forward_to_kernel = intercept_hook_point(desc.nr,
 			desc.args[0],
 			desc.args[1],
@@ -703,7 +700,8 @@ intercept_routine(struct context *context)
 			desc.args[4],
 			desc.args[5],
 			&result);
-
+		
+	}
 	if (desc.nr == SYS_vfork || desc.nr == SYS_rt_sigreturn) {
 		/* can't handle these syscalls the normal way */
 		return (struct wrapper_ret){.gpr3 = context->gpr3, .gpr4 = 0 };
@@ -733,7 +731,8 @@ intercept_routine(struct context *context)
 					desc.args[3],
 					desc.args[4],
 					desc.args[5]);
-			unsigned long long i;
+		// Store the error code in ccr
+		unsigned long long i;
 		__asm__ volatile
 		(
 		"mfcr %0\n\t"
@@ -742,7 +741,7 @@ intercept_routine(struct context *context)
 		: /* No clobbered registers */);
 		context->ccr = i;
 		error = syscall_error_code(result);
-		// if (error > 0) result = -error;
+
 	}
 
 		/*

@@ -88,7 +88,7 @@ long syscall_no_intercept(long syscall_number, ...);
  * after the syscall_no_intercept call
  */
 static inline int
-syscall_error_code(long result)
+__attribute__((always_inline)) syscall_error_code(long result)
 {
 	unsigned long long i;
 	__asm__ volatile
@@ -96,7 +96,7 @@ syscall_error_code(long result)
 	"mfcr %0\n\t"
 	:"=r"(i) /* Output registers */
 	:
-	: /* No clobbered registers */);
+	: "cr0");
 
 	if ((i & 0x10000000) > 0) {
 		errno = result;
@@ -104,17 +104,20 @@ syscall_error_code(long result)
 		__asm__ volatile("mtcr %0\n\t"
 		:   /* Output registers */
 		: "r" (i)
-		: /* No clobbered registers */);
+		: "cr0");
 
-		return result;
+		
 	}
+	else{
 
+	result = 0;
+	
 	__asm__ volatile("mtcr %0\n\t"
 	:  /* Output registers */
 	: "r" (i)
-	: /* No clobbered registers */);
-
-	return 0;
+	: "cr0");
+	}
+	return result;
 }
 
 /*
@@ -132,7 +135,7 @@ int syscall_hook_in_process_allowed(void);
 }
 /* Wrapper to call syscall + error code */
 template < class... Args >
-inline long syscall_no_intercept_wrapper(long syscall_number, Args ... args) {
+inline long __attribute__((always_inline)) syscall_no_intercept_wrapper(long syscall_number, Args ... args) {
 
 	long result;
 	int error_sc = 0;

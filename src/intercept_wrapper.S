@@ -42,7 +42,7 @@
 #define r4 4
 #define r2 2
 #define r5 5
-#define r10 10
+#define r11 11
 #define r16 16
 #define r31 31
 #define r30 30
@@ -55,13 +55,13 @@
 
 #define SAVE_AREA	((NR_GPR + NR_SPR) * 8)
 // 288 bytes for the stack frame
-#define CALLER_FRAME	384
+//#define CALLER_FRAME	384
+#define CALLER_FRAME 88
 // 376 - 288 = 88 bytes 
 // 384 - 288 = 96 bytes
 // 512 - 288 = 320 bytes
-
-#define STACK_FRAME	SAVE_AREA
-
+#define STACK_PRE 480
+#define STACK_FRAME	 (288+STACK_PRE)
 #define CCR_SAVE	(CALLER_FRAME)
 #define LR_SAVE		(CCR_SAVE + 8)
 #define CTR_SAVE	(LR_SAVE  + 8)
@@ -103,6 +103,7 @@ intercept_wrapper:
 	.cfi_startproc
 
 	stdu    r1,-STACK_FRAME(r1)
+    .cfi_adjust_cfa_offset -STACK_FRAME
     SAVE_GPR(0)
     mflr    r0
     std     r0,LR_SAVE(r1)
@@ -146,14 +147,18 @@ intercept_wrapper:
     SAVE_GPR(31)
 
 
-    cmpdi r30 ,1
+    cmpdi r11 ,1
     beq 0f
     addi r3, r1, CALLER_FRAME-8 #368
+   // stdu r1, -16(r1)  // We put some extra stack to call functions
     bl intercept_routine
+  //  addi r1,r1,16
     b 1f
 
 0:  addi r3, r1, CALLER_FRAME-8  // Put in R3 the @ of the context
+ //   stdu r1, -16(r1)
     bl intercept_routine_post_clone
+  //  addi r1,r1,16
     nop
 
 1:
@@ -215,5 +220,6 @@ intercept_wrapper:
     REST_GPR(30)
     REST_GPR(31)
     addi    r1,r1,STACK_FRAME
+    .cfi_def_cfa_offset -STACK_FRAME
     blr
 	.cfi_endproc

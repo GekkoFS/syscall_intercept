@@ -44,7 +44,8 @@ syscall_no_intercept:
     mr 6, 7
     mr 7, 8
     mr 8, 9
-    mr 9, 10
     sc
     blr             // Error code in cr0.so
 .size   syscall_no_intercept, .-syscall_no_intercept
+
+
