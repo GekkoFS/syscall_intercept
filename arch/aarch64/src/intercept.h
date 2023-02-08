@@ -202,6 +202,6 @@ bool is_overwritable_nop(const struct intercept_disasm_result *ins);
 
 unsigned char *create_jump(unsigned char *from, void *to);
 
-const char *cmdline;
+extern const char *cmdline;
 extern size_t page_size;
 #endif
