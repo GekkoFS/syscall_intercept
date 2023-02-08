@@ -35,6 +35,7 @@
 #include <stddef.h>
 #include <syscall.h>
 #include <fcntl.h>
+#include <linux/version.h>
 
 #define SARGS(name, r, ...) \
 	[SYS_##name] = {#name, r, {__VA_ARGS__, }}
@@ -337,11 +338,13 @@ static const struct syscall_desc table[] = {
 	SARGS(process_vm_writev, rdec, arg_, arg_, arg_, arg_, arg_, arg_),
 	SARGS(kcmp, rdec, arg_, arg_, arg_, arg_, arg_),
 	SARGS(finit_module, rdec, arg_fd, arg_, arg_),
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
 #ifdef SYS_sched_setattr
 	SARGS(sched_setattr, rdec, arg_, arg_, arg_),
 #endif
 #ifdef SYS_sched_getattr
 	SARGS(sched_getattr, rdec, arg_, arg_, arg_, arg_),
+#endif
 #endif
 #ifdef SYS_renameat2
 	SARGS(renameat2, rdec, arg_atfd, arg_cstr, arg_atfd, arg_cstr, arg_),

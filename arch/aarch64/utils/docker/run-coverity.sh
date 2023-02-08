@@ -1,0 +1,1 @@
+../../../../utils/docker/run-coverity.sh

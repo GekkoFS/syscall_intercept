@@ -1,0 +1,1 @@
+../../../../utils/check_license/check-license.c

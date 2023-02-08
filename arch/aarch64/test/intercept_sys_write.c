@@ -1,0 +1,1 @@
+../../../test/intercept_sys_write.c

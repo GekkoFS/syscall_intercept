@@ -427,38 +427,13 @@ analyze_object(struct dl_phdr_info *info, size_t size, void *data)
 	patches->base_addr = (unsigned char *)info->dlpi_addr;
 	patches->path = path;
 	find_syscalls(patches);
+	allocate_trampoline_table(patches);
+	create_patch_wrappers(patches);
 
 	return 0;
 }
 
 const char *cmdline;
-
-static unsigned char asm_wrapper_space[0x100000];
-static unsigned char *next_asm_wrapper_space = asm_wrapper_space + PAGE_SIZE;
-
-static bool
-is_asm_wrapper_space_full(void)
-{
-	return next_asm_wrapper_space + asm_wrapper_tmpl_size + 256 >
-			asm_wrapper_space + sizeof(asm_wrapper_space);
-}
-
-/*
- * mprotect_asm_wrappers
- * The code generated into the data segment at the asm_wrapper_space
- * array is not executable by default. This routine sets that memory region
- * to be executable, must called before attempting to execute any patched
- * syscall.
- */
-void
-mprotect_asm_wrappers(void)
-{
-	mprotect_no_intercept(
-	    round_down_address(asm_wrapper_space + PAGE_SIZE),
-	    sizeof(asm_wrapper_space) - PAGE_SIZE,
-	    PROT_READ | PROT_EXEC,
-	    "mprotect_asm_wrappers PROT_READ | PROT_EXEC");
-}
 
 /*
  * intercept - This is where the highest level logic of hotpatching
@@ -492,12 +467,6 @@ intercept(int argc, char **argv)
 	if (!libc_found)
 		xabort("libc not found");
 
-	for (unsigned i = 0; i < objs_count; ++i) {
-		if (objs[i].count > 0 && is_asm_wrapper_space_full())
-			xabort("not enough space in asm_wrapper_space");
-		allocate_trampoline_table(objs + i);
-		create_patch_wrappers(objs + i, &next_asm_wrapper_space);
-	}
 	mprotect_asm_wrappers();
 	for (unsigned i = 0; i < objs_count; ++i)
 		activate_patches(objs + i);
@@ -548,7 +517,7 @@ xabort_errno(int error_code, const char *msg)
 
 		/* not using libc - inline sprintf */
 		do {
-			*c-- = (error_code % 10) + '0';
+			*c-- = error_code % 10;
 			++len;
 			error_code /= 10;
 		} while (error_code != 0);

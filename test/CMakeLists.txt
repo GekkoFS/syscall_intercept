@@ -1,5 +1,5 @@
 #
-# Copyright 2017-2020, Intel Corporation
+# Copyright 2017, Intel Corporation
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -45,8 +45,13 @@ add_executable(asm_pattern asm_pattern.c
 		$<TARGET_OBJECTS:syscall_intercept_base_c>
 		$<TARGET_OBJECTS:syscall_intercept_base_asm>)
 
-target_link_libraries(asm_pattern
-	PRIVATE ${CMAKE_DL_LIBS} ${capstone_LDFLAGS})
+if(capstone_SUBMODULE)
+	target_link_libraries(asm_pattern
+		PRIVATE ${CMAKE_DL_LIBS} capstone-shared)
+else()
+	target_link_libraries(asm_pattern
+		PRIVATE ${CMAKE_DL_LIBS} ${capstone_LDFLAGS})
+endif()
 
 set(asm_patterns
 	nosyscall
@@ -69,16 +74,7 @@ set(asm_patterns
 	pattern_nop_padding6
 	pattern_nop_padding7
 	pattern_nop_padding8
-	pattern_nop_padding9
-	pattern_lea_rip_rdi
-	pattern_lea_rip_r12)
-
-try_compile(ASSEMBLER_SUPPORTS_ENDBR64 ${CMAKE_BINARY_DIR}
-		${CMAKE_CURRENT_SOURCE_DIR}/pattern_endbr64.in.S
-		CMAKE_FLAGS "-DCMAKE_ASM_LINK_EXECUTABLE='echo skip linking'")
-if(ASSEMBLER_SUPPORTS_ENDBR64)
-	list(APPEND asm_patterns pattern_endbr64)
-endif()
+	pattern_nop_padding9)
 
 set(asm_patterns_failing
 	pattern_double_syscall

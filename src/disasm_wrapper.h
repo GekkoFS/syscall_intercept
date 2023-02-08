@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2020, Intel Corporation
+ * Copyright 2016-2017, Intel Corporation
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -49,7 +49,6 @@
 #include <stdint.h>
 
 struct intercept_disasm_result {
-	const unsigned char *address;
 
 	bool is_set;
 
@@ -63,21 +62,6 @@ struct intercept_disasm_result {
 	 * as an operand.
 	 */
 	bool has_ip_relative_opr;
-
-	/* as of now this only refers to endbr64 */
-	bool is_endbr;
-
-	/*
-	 * Flag marking lea instructions setting a 64 bit register to a
-	 * RIP relative address. They can be relocated -- but by simple memcpy.
-	 */
-	bool is_lea_rip;
-
-	/*
-	 * The X86 encoding of 64 bit register being set in an instruction
-	 * marked above as is_lea_rip.
-	 */
-	unsigned char arg_register_bits;
 
 	/* call instruction */
 	bool is_call;

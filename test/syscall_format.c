@@ -762,7 +762,7 @@ main(int argc, char **argv)
 	syscall(SYS_eventfd, 45);
 	syscall(SYS_eventfd2, 47, EFD_SEMAPHORE);
 
-	fallocate(1, FALLOC_FL_PUNCH_HOLE, 3, 4);
+	/* fallocate(1, FALLOC_FL_PUNCH_HOLE, 3, 4); */
 
 	syscall(SYS_perf_event_open, p0, 1L, 2L, 3L, 4L, 5L);
 
