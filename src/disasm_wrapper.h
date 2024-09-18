@@ -63,53 +63,25 @@ struct intercept_disasm_result {
 	 * as an operand.
 	 */
 	bool has_ip_relative_opr;
+	bool is_abs_jump;
 
-	/* as of now this only refers to endbr64 */
-	bool is_endbr;
-
-	/*
-	 * Flag marking lea instructions setting a 64 bit register to a
-	 * RIP relative address. They can be relocated -- but by simple memcpy.
-	 */
-	bool is_lea_rip;
-
-	/*
-	 * The X86 encoding of 64 bit register being set in an instruction
-	 * marked above as is_lea_rip.
-	 */
-	unsigned char arg_register_bits;
-
-	/* call instruction */
-	bool is_call;
-
-	bool is_jump;
-
-	/*
-	 * The flag is_rel_jump marks any instruction that jumps, to
-	 * a relative address encoded in its operand.
-	 * This includes call as well.
-	 */
-	bool is_rel_jump;
-
-	bool is_indirect_jump;
-
-	bool is_ret;
-
-	bool is_nop;
-
-	/*
-	 * Optional fields:
-	 * The rip_disp field contains the displacement used in
-	 * instructions referring to RIP relative addresses.
-	 * The rip_ref_addr field contains the absolute address of
-	 * such a reference, computed based on the rip_disp.
-	 * These are only valid, when has_ip_relative_opr is true.
-	 */
 	int32_t rip_disp;
 	const unsigned char *rip_ref_addr;
 
+	int16_t a7_set;
+	bool is_a7_modified;
+	bool is_ra_used;
+	uint8_t reg_set;
+
 #ifndef NDEBUG
-	const char *mnemonic;
+	/*
+	 * Switched to char array instead of pointer because capstone doesn't
+	 * allocate (thankfully) space for each instruction's mnemonic, but
+	 * it uses the same space, i.e., all surrounding instructions would share
+	 * the same string. This is only in DEBUG mode, so we can be generous
+	 * with 16 B.
+	 */
+	char mnemonic[16];
 #endif
 };
 

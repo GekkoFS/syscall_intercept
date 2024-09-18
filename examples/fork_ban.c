@@ -73,8 +73,10 @@ specifies_new_stack(long syscall_number, long arg0, long arg1)
 static bool
 is_syscall_fork(long syscall_number, long arg0)
 {
+#ifdef SYS_fork
 	if (syscall_number == SYS_fork || syscall_number == SYS_vfork)
 		return true;
+#endif
 
 	if (syscall_number == SYS_clone && (arg0 & CLONE_THREAD) == 0)
 		return true;

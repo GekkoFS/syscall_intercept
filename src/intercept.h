@@ -44,6 +44,7 @@
 #include <link.h>
 
 #include "disasm_wrapper.h"
+#include "rv_encode.h"
 
 extern bool debug_dumps_on;
 void debug_dump(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -61,11 +62,6 @@ struct syscall_desc {
 	long args[6];
 };
 
-struct range {
-	unsigned char *address;
-	size_t size;
-};
-
 /*
  * The patch_list array stores some information on
  * whereabouts of patches made to glibc.
@@ -78,22 +74,36 @@ struct range {
  *  be written.
  */
 struct patch_desc {
+	/* the address to jump back to */
+	const uint8_t *return_address;
+	/* the address where the relocated patches are */
+	const uint8_t *relocation_address;
+	/* holds the a7 value found before ecall or -1 for MID a7, -2 for GW */
+	int16_t syscall_num;
+
 	/* the original syscall instruction */
-	unsigned char *syscall_addr;
+	const uint8_t *syscall_addr;
 
 	const char *containing_lib_path;
 
 	/* the offset of the original syscall instruction */
-	unsigned long syscall_offset;
+	uint64_t syscall_offset;
 
-	/* the new asm wrapper created */
-	unsigned char *asm_wrapper;
+	/*
+	 * GW:  address of the first byte overwritten in the code,
+	 *      excluding c_nop when needed to align patch block
+	 * MID: address of the GW's patch, skipping MODIFY_SP_INS_SIZE
+	 *      because TYPE_MID already reduced the stack pointer
+	 * SML: address of the GW's first byte overwritten in the code
+	 */
+	uint8_t *dst_jmp_patch;
+	uint8_t patch_size_bytes;
 
-	/* the first byte overwritten in the code */
-	unsigned char *dst_jmp_patch;
-
-	/* the address to jump back to */
-	unsigned char *return_address;
+	/* align patch with surrounding instrs, only needed with compressed code */
+#ifdef __riscv_c
+	bool start_with_c_nop;
+	bool end_with_c_nop;
+#endif
 
 	/*
 	 * Describe up to three instructions surrounding the original
@@ -102,16 +112,10 @@ struct patch_desc {
 	 * both the directly preceding, and the directly following are
 	 * single byte instruction, that only gives 4 bytes of space ).
 	 */
-	struct intercept_disasm_result preceding_ins_2;
-	struct intercept_disasm_result preceding_ins;
-	struct intercept_disasm_result following_ins;
-	bool uses_prev_ins_2;
-	bool uses_prev_ins;
-	bool uses_next_ins;
-
-	bool uses_nop_trampoline;
-
-	struct range nop_trampoline;
+	struct intercept_disasm_result *surrounding_instrs;
+	uint8_t syscall_idx;
+	bool is_ra_used_before;
+	uint8_t return_register;
 };
 
 /*
@@ -129,14 +133,13 @@ struct section_list {
 };
 
 struct intercept_desc {
-
 	/*
 	 * uses_trampoline_table - For now this is decided runtime
 	 * to make it easy to compare the operation of the library
 	 * with and without it. If it is OK, we can remove this
 	 * flag, and just always use the trampoline table.
 	 */
-	bool uses_trampoline_table;
+	bool uses_trampoline;
 
 	/*
 	 * delta between vmem addresses and addresses in symbol tables,
@@ -172,48 +175,58 @@ struct intercept_desc {
 	unsigned char *text_start;
 	unsigned char *text_end;
 
-
 	struct patch_desc *items;
 	unsigned count;
-	unsigned char *jump_table;
 
-	size_t nop_count;
-	size_t max_nop_count;
-	struct range *nop_table;
+	uint8_t *jump_table;
 
-	unsigned char *trampoline_table;
-	size_t trampoline_table_size;
-
-	unsigned char *next_trampoline;
+	/* the RISC-V version only needs one trampoline per patched library */
+	uint8_t *trampoline_address;
 };
 
-bool has_jump(const struct intercept_desc *desc, unsigned char *addr);
+bool has_jump(const struct intercept_desc *desc, const uint8_t *addr);
 void mark_jump(const struct intercept_desc *desc, const unsigned char *addr);
 
-void allocate_trampoline_table(struct intercept_desc *desc);
+void allocate_trampoline(struct intercept_desc *desc);
 void find_syscalls(struct intercept_desc *desc);
 
-void init_patcher(void);
-void create_patch_wrappers(struct intercept_desc *desc, unsigned char **dst);
-void mprotect_asm_wrappers(void);
+void create_patch(struct intercept_desc *desc, unsigned char **dst);
 
 /*
  * Actually overwrite instructions in glibc.
  */
 void activate_patches(struct intercept_desc *desc);
 
-#define SYSCALL_INS_SIZE 2
-#define JUMP_INS_SIZE 5
-#define CALL_OPCODE 0xe8
-#define JMP_OPCODE 0xe9
-#define SHORT_JMP_OPCODE 0xeb
-#define PUSH_IMM_OPCODE 0x68
-#define NOP_OPCODE 0x90
-#define INT3_OPCODE 0xCC
+#define SURROUNDING_INSTRS_NUM	13
+#define SYSCALL_IDX		6
 
-bool is_overwritable_nop(const struct intercept_disasm_result *ins);
+#define TYPE_GW			-2
+#define TYPE_MID		-1
+//Implicitly: TYPE_SML >= 0
 
-void create_jump(unsigned char opcode, unsigned char *from, void *to);
+#define TYPE_MID_SIZE		(MODIFY_SP_INS_SIZE + \
+				STORE_LOAD_INS_SIZE + \
+				JAL_INS_SIZE + \
+				STORE_LOAD_INS_SIZE + \
+				MODIFY_SP_INS_SIZE)
+
+#define TYPE_GW_SIZE		(MODIFY_SP_INS_SIZE + \
+				STORE_LOAD_INS_SIZE + \
+				JUMP_2GB_INS_SIZE + \
+				STORE_LOAD_INS_SIZE + \
+				MODIFY_SP_INS_SIZE)
+
+#define TRAMPOLINE_SIZE 	(MODIFY_SP_INS_SIZE + \
+				STORE_LOAD_INS_SIZE + \
+				JUMP_ABS_INS_SIZE)
+/*
+ * When the trampoline is not used, the GW jumps directly to asm_entry_point
+ * but with a small offset because the first two instructions in asm_entry_point
+ * are there to restore the GW's ra that was overwritten by the trampoline.
+ * This is clearly not necessary when the GW jumps directly.
+ */
+#define DIRECT_JUMP_OFFSET	(STORE_LOAD_INS_SIZE + \
+				MODIFY_SP_INS_SIZE)
 
 extern const char *cmdline;
 
@@ -224,8 +237,5 @@ round_down_address(unsigned char *address)
 {
 	return (unsigned char *)(((uintptr_t)address) & ~(PAGE_SIZE - 1));
 }
-
-/* The size of an asm wrapper instance */
-extern size_t asm_wrapper_tmpl_size;
 
 #endif

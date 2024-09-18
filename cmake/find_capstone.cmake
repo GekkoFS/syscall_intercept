@@ -29,18 +29,18 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-find_package(capstone QUIET)
+find_package(capstone 5.0 QUIET)
 
 if(NOT capstone_FOUND)
 	find_package(PkgConfig QUIET)
 	if(PKG_CONFIG_FOUND)
-		pkg_search_module(capstone capstone QUIET)
+		pkg_search_module(capstone capstone>=5.0 QUIET)
 	endif()
 endif()
 
 if(NOT capstone_FOUND)
 	message(FATAL_ERROR
-"Unable to find capstone. Please install pkg-config and capstone development files, e.g.:
+"Unable to find capstone >= 5.0. Please install pkg-config and capstone development files, e.g.:
 sudo apt-get install pkg-config libcapstone-dev (on Debian, Ubuntu)
 or
 sudo dnf install capstone-devel (on Fedora)

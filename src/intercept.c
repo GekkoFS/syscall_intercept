@@ -101,39 +101,9 @@ debug_dump(const char *fmt, ...)
 
 static void log_header(void);
 
-void __attribute__((noreturn)) xlongjmp(long rip, long rsp, long rax);
-
-/*
- * Kernel can clobber rcx and r11 while serving a syscall, those are ignored
- * The layout of this struct depends on the way the assembly wrapper saves
- * register on the stack.
- * Note: don't expect the SIMD array to be aligned for efficient use with
- * AVX instructions.
- */
-struct context {
-	struct patch_desc *patch_desc;
-	long rip;
-	long r15;
-	long r14;
-	long r13;
-	long r12;
-	long r10;
-	long r9;
-	long r8;
-	long rsp;
-	long rbp;
-	long rdi;
-	long rsi;
-	long rbx;
-	long rdx;
-	long rax;
-	char padd[0x200 - 0x168]; /* see: stack layout in intercept_wrapper.s */
-	long SIMD[16][8]; /* 8 SSE, 8 AVX, or 16 AVX512 registers */
-};
-
 struct wrapper_ret {
-	long rax;
-	long rdx;
+	int64_t a0;
+	int64_t a1;
 };
 
 /* Should all objects be patched, or only libc and libpthread? */
@@ -333,9 +303,9 @@ should_patch_object(uintptr_t addr, const char *path)
 {
 	static uintptr_t self_addr;
 	if (self_addr == 0) {
-		extern unsigned char intercept_asm_wrapper_tmpl[];
+		extern uint8_t asm_relocation_space[];
 		Dl_info self;
-		if (!dladdr((void *)&intercept_asm_wrapper_tmpl, &self))
+		if (!dladdr(asm_relocation_space, &self))
 			xabort("self dladdr failure");
 		self_addr = (uintptr_t)self.dli_fbase;
 	}
@@ -433,31 +403,38 @@ analyze_object(struct dl_phdr_info *info, size_t size, void *data)
 
 const char *cmdline;
 
-static unsigned char asm_wrapper_space[0x100000];
-static unsigned char *next_asm_wrapper_space = asm_wrapper_space + PAGE_SIZE;
+extern uint8_t asm_relocation_space[];
+extern uint64_t asm_relocation_space_size;
+static uint8_t *cur_asm_relocation_space = asm_relocation_space;
 
 static bool
-is_asm_wrapper_space_full(void)
+is_asm_relocation_space_full()
 {
-	return next_asm_wrapper_space + asm_wrapper_tmpl_size + 256 >
-			asm_wrapper_space + sizeof(asm_wrapper_space);
+	return (uint64_t)(cur_asm_relocation_space - asm_relocation_space) >
+		asm_relocation_space_size;
 }
 
 /*
- * mprotect_asm_wrappers
- * The code generated into the data segment at the asm_wrapper_space
- * array is not executable by default. This routine sets that memory region
- * to be executable, must called before attempting to execute any patched
- * syscall.
+ * Enable/disable writing on relocation space (intercept_irq_entry.S).
+ * NOTE: this function expect asm_relocation_space to be align to
+ *       PAGE_SIZE (12 bits) boundery.
  */
-void
-mprotect_asm_wrappers(void)
+static void
+write_enable_asm_relocation_space(bool enable_write)
 {
-	mprotect_no_intercept(
-	    round_down_address(asm_wrapper_space + PAGE_SIZE),
-	    sizeof(asm_wrapper_space) - PAGE_SIZE,
-	    PROT_READ | PROT_EXEC,
-	    "mprotect_asm_wrappers PROT_READ | PROT_EXEC");
+	int prot;
+	const char *err_msg;
+
+	if (enable_write) {
+		prot = PROT_READ | PROT_WRITE | PROT_EXEC;
+		err_msg = "asm_relocation_space write enable";
+	} else {
+		prot = PROT_READ | PROT_EXEC;
+		err_msg = "asm_relocation_space write disable";
+	}
+
+	mprotect_no_intercept(asm_relocation_space, asm_relocation_space_size,
+				prot, err_msg);
 }
 
 /*
@@ -476,6 +453,7 @@ intercept(int argc, char **argv)
 {
 	(void) argc;
 	cmdline = argv[0];
+	extern void init_tls_offset_table(void);
 
 	if (!syscall_hook_in_process_allowed())
 		return;
@@ -486,19 +464,26 @@ intercept(int argc, char **argv)
 	intercept_setup_log(getenv("INTERCEPT_LOG"),
 			getenv("INTERCEPT_LOG_TRUNC"));
 	log_header();
-	init_patcher();
 
 	dl_iterate_phdr(analyze_object, NULL);
 	if (!libc_found)
 		xabort("libc not found");
 
-	for (unsigned i = 0; i < objs_count; ++i) {
-		if (objs[i].count > 0 && is_asm_wrapper_space_full())
-			xabort("not enough space in asm_wrapper_space");
-		allocate_trampoline_table(objs + i);
-		create_patch_wrappers(objs + i, &next_asm_wrapper_space);
+	init_tls_offset_table();
+	write_enable_asm_relocation_space(true);
+
+	for (uint32_t i = 0; i < objs_count; ++i) {
+		if (objs[i].count == 0)
+			continue;
+		else if (is_asm_relocation_space_full())
+			xabort("not enough space in relocation space");
+
+		allocate_trampoline(objs + i);
+		create_patch(objs + i, &cur_asm_relocation_space);
 	}
-	mprotect_asm_wrappers();
+
+	write_enable_asm_relocation_space(false);
+
 	for (unsigned i = 0; i < objs_count; ++i)
 		activate_patches(objs + i);
 }
@@ -584,21 +569,67 @@ xabort_on_syserror(long syscall_result, const char *msg)
 }
 
 /*
- * get_syscall_in_context -- describe syscall arguments, and syscall number
- * based on the contents of the relevant registers righ before the syscall
- * is meant to be executed. On Linux, all syscall arguments are passed to
- * a syscall in registers.
+ * When patch comes to asm_entry_point (intercept_irq_entry.S), one of
+ * the first thing it does is finding "identity" of a patch by using
+ * it's uniqe return address.
  */
-static void
-get_syscall_in_context(struct context *context, struct syscall_desc *sys)
+struct wrapper_ret
+detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr,
+			uint64_t GW_ret_addr)
 {
-	sys->nr = (int)context->rax; /* ignore higher 32 bits */
-	sys->args[0] = context->rdi;
-	sys->args[1] = context->rsi;
-	sys->args[2] = context->rdx;
-	sys->args[3] = context->r10;
-	sys->args[4] = context->r8;
-	sys->args[5] = context->r9;
+	struct patch_desc *patch;
+	// sign-extend syscall_num to register size
+	int64_t syscall_num;
+	uint64_t reloc_addr;
+	uint64_t ret_addrs[3] = {MID_ret_addr, SML_ret_addr, GW_ret_addr};
+
+	for (uint8_t ra_idx = 0; ra_idx < sizeof(ret_addrs); ++ra_idx) {
+		for (uint32_t o = 0; o < objs_count; ++o) {
+			for (uint32_t p = 0; p < objs[o].count; ++p) {
+
+				patch = objs[o].items + p;
+				uint64_t ret_addr = (uint64_t)patch->return_address;
+				syscall_num = patch->syscall_num;
+				reloc_addr = (uint64_t)patch->relocation_address;
+
+				if (ret_addr == ret_addrs[ra_idx]) {
+					switch (syscall_num) {
+					case TYPE_GW:
+						if (ra_idx == 2)
+							goto ret_to_irq_entry;
+						break;
+					case TYPE_MID:
+						if (ra_idx == 0)
+							goto ret_to_irq_entry;
+						break;
+					default: // TYPE_SML
+						if (ra_idx == 1)
+							goto ret_to_irq_entry;
+						break;
+					}
+				}
+			}
+		}
+	}
+ret_to_irq_entry:
+
+	return (struct wrapper_ret){.a0 = syscall_num, .a1 = reloc_addr};
+}
+
+struct patch_desc *
+get_cur_patch(int64_t return_address)
+{
+	struct patch_desc *patch;
+
+	for (uint32_t o = 0; o < objs_count; ++o) {
+		for (uint32_t p = 0; p < objs[o].count; ++p) {
+			patch = objs[o].items + p;
+			if ((int64_t)patch->return_address == return_address)
+				break;
+		}
+	}
+
+	return patch;
 }
 
 /*
@@ -633,17 +664,29 @@ get_syscall_in_context(struct context *context, struct syscall_desc *sys)
  *  from this function.
  */
 struct wrapper_ret
-intercept_routine(struct context *context)
+intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
+			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
 {
 	long result;
 	int forward_to_kernel = true;
-	struct syscall_desc desc;
-	struct patch_desc *patch = context->patch_desc;
-
-	get_syscall_in_context(context, &desc);
+	struct patch_desc *patch = get_cur_patch(a6);
+	/*
+	 * The RISC-V version of this library doesn't rely on offsets, instead
+	 * ecall args get passed directly. It's more straightforward, and
+	 * manually arranging the layout is likely to "offset" a programmer.
+	 */
+	struct syscall_desc desc = {
+		.nr = (int)a7, /* ignore higher 32 bits */
+		.args[0] = a0,
+		.args[1] = a1,
+		.args[2] = a2,
+		.args[3] = a3,
+		.args[4] = a4,
+		.args[5] = a5
+	};
 
 	if (handle_magic_syscalls(&desc, &result) == 0)
-		return (struct wrapper_ret){.rax = result, .rdx = 1 };
+		return (struct wrapper_ret){.a0 = result, .a1 = 1};
 
 	intercept_log_syscall(patch, &desc, UNKNOWN, 0);
 
@@ -657,9 +700,9 @@ intercept_routine(struct context *context)
 		    desc.args[5],
 		    &result);
 
-	if (desc.nr == SYS_vfork || desc.nr == SYS_rt_sigreturn) {
+	if (desc.nr == SYS_rt_sigreturn) {
 		/* can't handle these syscalls the normal way */
-		return (struct wrapper_ret){.rax = context->rax, .rdx = 0 };
+		return (struct wrapper_ret){.a0 = -1, .a1 = 0};
 	}
 
 	if (forward_to_kernel) {
@@ -675,10 +718,16 @@ intercept_routine(struct context *context)
 		 * the clone_child_intercept_routine instead, executing
 		 * it on the new child threads stack, then returns to libc.
 		 */
-		if (desc.nr == SYS_clone && desc.args[1] != 0)
-			return (struct wrapper_ret){
-				.rax = context->rax, .rdx = 2 };
-		else
+		if (desc.nr == SYS_clone && desc.args[1] != 0) {
+			return (struct wrapper_ret){.a0 = -1, .a1 = 2};
+		}
+#ifdef SYS_clone3
+		else if (desc.nr == SYS_clone3 &&
+			((struct clone_args *)desc.args[0])->stack != 0) {
+			return (struct wrapper_ret){.a0 = -1, .a1 = 2};
+		}
+#endif
+		else {
 			result = syscall_no_intercept(desc.nr,
 					desc.args[0],
 					desc.args[1],
@@ -686,11 +735,12 @@ intercept_routine(struct context *context)
 					desc.args[3],
 					desc.args[4],
 					desc.args[5]);
+		}
 	}
 
 	intercept_log_syscall(patch, &desc, KNOWN, result);
 
-	return (struct wrapper_ret){ .rax = result, .rdx = 1 };
+	return (struct wrapper_ret){.a0 = result, .a1 = 1};
 }
 
 /*
@@ -698,16 +748,14 @@ intercept_routine(struct context *context)
  * The routine called by an assembly wrapper when a clone syscall returns zero,
  * and a new stack pointer is used in the child thread.
  */
-struct wrapper_ret
-intercept_routine_post_clone(struct context *context)
+void
+intercept_routine_post_clone(int64_t a0)
 {
-	if (context->rax == 0) {
+	if (a0 == 0) {
 		if (intercept_hook_point_clone_child != NULL)
 			intercept_hook_point_clone_child();
 	} else {
 		if (intercept_hook_point_clone_parent != NULL)
-			intercept_hook_point_clone_parent(context->rax);
+			intercept_hook_point_clone_parent(a0);
 	}
-
-	return (struct wrapper_ret){.rax = context->rax, .rdx = 1 };
 }

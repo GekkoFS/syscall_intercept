@@ -62,7 +62,7 @@ open_orig_file(const struct intercept_desc *desc)
 {
 	int fd;
 
-	fd = syscall_no_intercept(SYS_open, desc->path, O_RDONLY);
+	fd = syscall_no_intercept(SYS_openat, AT_FDCWD, desc->path, O_RDONLY);
 
 	xabort_on_syserror(fd, __func__);
 
@@ -166,59 +166,6 @@ allocate_jump_table(struct intercept_desc *desc)
 }
 
 /*
- * calculate_table_count - estimate the number of entries
- * that might be used for nop table.
- */
-static size_t
-calculate_table_count(const struct intercept_desc *desc)
-{
-	assert(desc->text_start < desc->text_end);
-
-	/* how large is the text segment? */
-	size_t bytes = (size_t)(desc->text_end - desc->text_start + 1);
-
-	/*
-	 * Guess: one entry per 64 bytes of machine code.
-	 * This would result in zero entries for 63 bytes of text segment,
-	 * so it is safer to have an absolute minimum. The 0x10000 value
-	 * is just an arbitrary value.
-	 * If more nops than this estimate are found (not likely), than the
-	 * code just continues without remembering those nops - this does
-	 * not break the patching process.
-	 */
-	if (bytes > 0x10000)
-		return bytes / 64;
-	else
-		return 1024;
-}
-
-/*
- * allocate_nop_table - allocates desc->nop_table
- */
-static void
-allocate_nop_table(struct intercept_desc *desc)
-{
-	desc->max_nop_count = calculate_table_count(desc);
-	desc->nop_count = 0;
-	desc->nop_table =
-	    xmmap_anon(desc->max_nop_count * sizeof(desc->nop_table[0]));
-}
-
-/*
- * mark_nop - mark an address in a text section as overwritable nop instruction
- */
-static void
-mark_nop(struct intercept_desc *desc, unsigned char *address, size_t size)
-{
-	if (desc->nop_count == desc->max_nop_count)
-		return;
-
-	desc->nop_table[desc->nop_count].address = address;
-	desc->nop_table[desc->nop_count].size = size;
-	desc->nop_count++;
-}
-
-/*
  * is_bit_set - check a bit in a bitmap
  */
 static bool
@@ -244,7 +191,7 @@ set_bit(unsigned char *table, uint64_t offset)
  * ELF file.
  */
 bool
-has_jump(const struct intercept_desc *desc, unsigned char *addr)
+has_jump(const struct intercept_desc *desc, const uint8_t *addr)
 {
 	if (addr >= desc->text_start && addr <= desc->text_end)
 		return is_bit_set(desc->jump_table,
@@ -378,7 +325,18 @@ find_jumps_in_section_rela(struct intercept_desc *desc, Elf64_Shdr *section,
 static bool
 has_pow2_count(const struct intercept_desc *desc)
 {
+#ifdef __riscv_zbb
+	bool ret;
+	asm volatile (
+		"cpop %0, %1\n\t"
+		"sltiu %0, %0, 2\n\t"
+		: "=r" (ret)
+		: "r" (desc->count)
+	);
+	return ret;
+#else
 	return (desc->count & (desc->count - 1)) == 0;
+#endif
 }
 
 /*
@@ -405,33 +363,34 @@ add_new_patch(struct intercept_desc *desc)
 	return &(desc->items[desc->count++]);
 }
 
-/*
- * is_overwritable_nop
- * Check if an instruction just disassembled is a NOP that can be
- * used for placing an extra jump instruction into it.
- * See the nop_trampoline usage in the patcher.c source file.
- * This instruction is usable only if it occupies at least seven bytes.
- * Two are needed for a short jump, and another 5 bytes for a trampoline
- * jump with 32 bit displacement.
- *
- * As in (where XXXX represents a 32 bit displacement):
- *                                Before      After
- *                                _______     _______
- * address of NOP instruction ->  | NOP |     | JMP | <- jumps to next
- *                                |     |     | +8  |     instruction
- *                                |     |     | JMP | <- 5 bytes of payload
- *                                |     |     |  X  |
- *                                |     |     |  X  |
- *                                |     |     |  X  |
- *                                |     |     |  X  |
- *                                |     |     |     |
- * address of next instruction -> -------     -------
- *
- */
-bool
-is_overwritable_nop(const struct intercept_disasm_result *ins)
+static void
+fill_up_patch(struct intercept_desc *desc, struct patch_desc *patch,
+		struct intercept_disasm_result surr[], uint8_t syscall_idx)
 {
-	return ins->is_nop && ins->length >= 2 + 5;
+	size_t surr_size = sizeof(struct intercept_disasm_result) *
+				SURROUNDING_INSTRS_NUM;
+
+	patch->containing_lib_path = desc->path;
+
+	/*
+	 * Using malloc/free should be safe when used before patching any
+	 * library (including glibc), which happens in activate_patches()
+	 * (patcher.c). If it is unsafe, SYS_brk or mmap can be used instead.
+	 * This gets freed in create_patch(), patcher.c.
+	 */
+	patch->surrounding_instrs =
+		(struct intercept_disasm_result *)malloc(surr_size);
+	memcpy(patch->surrounding_instrs, surr, surr_size);
+
+	patch->syscall_addr = surr[syscall_idx].address;
+
+	ptrdiff_t syscall_offset = patch->syscall_addr -
+	    (desc->text_start - desc->text_offset);
+
+	assert(syscall_offset >= 0);
+
+	patch->syscall_offset = (uint64_t)syscall_offset;
+	patch->syscall_idx = syscall_idx;
 }
 
 /*
@@ -456,20 +415,21 @@ crawl_text(struct intercept_desc *desc)
 {
 	unsigned char *code = desc->text_start;
 
+	uint8_t instrs_num = SURROUNDING_INSTRS_NUM;
+
 	/*
 	 * Remember the previous three instructions, while
 	 * disassembling the code instruction by instruction in the
 	 * while loop below.
 	 */
-	struct intercept_disasm_result prevs[3] = {{0, }};
+	struct intercept_disasm_result surr[SURROUNDING_INSTRS_NUM] = {{0}};
 
 	/*
 	 * How many previous instructions were decoded before this one,
-	 * and stored in the prevs array. Usually three, except for the
+	 * and stored in the surr array. Usually three, except for the
 	 * beginning of the text section -- the first instruction naturally
 	 * has no previous instruction.
 	 */
-	unsigned has_prevs = 0;
 	struct intercept_disasm_context *context =
 	    intercept_disasm_init(desc->text_start, desc->text_end);
 
@@ -486,60 +446,41 @@ crawl_text(struct intercept_desc *desc)
 		if (result.has_ip_relative_opr)
 			mark_jump(desc, result.rip_ref_addr);
 
-		if (is_overwritable_nop(&result))
-			mark_nop(desc, code, result.length);
-
-		/*
-		 * Generate a new patch description, if:
-		 * - Information is available about a syscalls place
-		 * - one following instruction
-		 * - two preceding instructions
-		 *
-		 * So this is done only if instruction in the previous
-		 * loop iteration was a syscall. Which means the currently
-		 * decoded instruction is the 'following' instruction -- as
-		 * in following the syscall.
-		 * The two instructions from two iterations ago, and three
-		 * iterations ago are going to be the two 'preceding'
-		 * instructions stored in the patch description. Other fields
-		 * of the struct patch_desc are not filled at this point yet.
-		 *
-		 * prevs[0]      ->     patch->preceding_ins_2
-		 * prevs[1]      ->     patch->preceding_ins
-		 * prevs[2]      ->     [syscall]
-		 * current ins.  ->     patch->following_ins
-		 *
-		 *
-		 * XXX -- this ignores the cases where the text section
-		 * starts, or ends with a syscall instruction, or indeed, if
-		 * the second instruction in the text section is a syscall.
-		 * These implausible edge cases don't seem to be very important
-		 * right now.
-		 */
-		if (has_prevs >= 1 && prevs[2].is_syscall) {
+		if (surr[SYSCALL_IDX].is_syscall) {
 			struct patch_desc *patch = add_new_patch(desc);
-
-			patch->containing_lib_path = desc->path;
-			patch->preceding_ins_2 = prevs[0];
-			patch->preceding_ins = prevs[1];
-			patch->following_ins = result;
-			patch->syscall_addr = code - SYSCALL_INS_SIZE;
-
-			ptrdiff_t syscall_offset = patch->syscall_addr -
-			    (desc->text_start - desc->text_offset);
-
-			assert(syscall_offset >= 0);
-
-			patch->syscall_offset = (unsigned long)syscall_offset;
+			fill_up_patch(desc, patch, surr, SYSCALL_IDX);
 		}
 
-		prevs[0] = prevs[1];
-		prevs[1] = prevs[2];
-		prevs[2] = result;
-		if (has_prevs < 2)
-			++has_prevs;
+		// shift each element to the left (decrement), FIFO
+		memmove(surr, surr + 1, (instrs_num - 1) *
+			sizeof(struct intercept_disasm_result));
+		surr[instrs_num - 1] = result;
 
 		code += result.length;
+	}
+
+	/*
+	 * Last instrs in .text (from SYSCALL_IDX to the end of .text)
+	 * could not be checked for ecall before, so it is done here
+	 */
+	for (uint8_t i = SYSCALL_IDX; i < instrs_num; ++i) {
+		if (!surr[i].is_syscall)
+			continue;
+
+		uint8_t offset = i - SYSCALL_IDX;
+
+		if (offset > 0) {
+			// centralize ecall
+			memmove(surr, surr + offset, (instrs_num - offset) *
+				sizeof(struct intercept_disasm_result));
+
+			// unset redundant last surr instrs
+			memset(surr + (instrs_num - offset), 0, offset *
+				sizeof(struct intercept_disasm_result));
+		}
+
+		struct patch_desc *patch = add_new_patch(desc);
+		fill_up_patch(desc, patch, surr, i);
 	}
 
 	intercept_disasm_destroy(context);
@@ -561,8 +502,8 @@ get_min_address(void)
 
 	min_address = 0x10000; /* best guess */
 
-	int fd = syscall_no_intercept(SYS_open, "/proc/sys/vm/mmap_min_addr",
-					O_RDONLY);
+	int fd = syscall_no_intercept(SYS_openat, AT_FDCWD,
+					"/proc/sys/vm/mmap_min_addr", O_RDONLY);
 
 	if (fd >= 0) {
 		char line[64];
@@ -586,24 +527,21 @@ get_min_address(void)
  * Using mmap syscall with MAP_FIXED flag.
  */
 void
-allocate_trampoline_table(struct intercept_desc *desc)
+allocate_trampoline(struct intercept_desc *desc)
 {
 	char *e = getenv("INTERCEPT_NO_TRAMPOLINE");
 
 	/* Use the extra trampoline table by default */
-	desc->uses_trampoline_table = (e == NULL) || (e[0] == '0');
+	desc->uses_trampoline = (e == NULL) || (e[0] == '0');
 
-	if (!desc->uses_trampoline_table) {
-		desc->trampoline_table = NULL;
-		desc->trampoline_table_size = 0;
-		desc->trampoline_table = NULL;
+	if (!desc->uses_trampoline) {
+		desc->trampoline_address = NULL;
 		return;
 	}
 
 	FILE *maps;
 	char line[0x2000];
 	unsigned char *guess; /* Where we would like to allocate the table */
-	size_t size;
 
 	if ((uintptr_t)desc->text_end < INT32_MAX) {
 		/* start from the bottom of memory */
@@ -623,8 +561,6 @@ allocate_trampoline_table(struct intercept_desc *desc)
 	if ((uintptr_t)guess < get_min_address())
 		guess = (void *)get_min_address();
 
-	size = 64 * 0x1000; /* XXX: don't just guess */
-
 	if ((maps = fopen("/proc/self/maps", "r")) == NULL)
 		xabort("fopen /proc/self/maps");
 
@@ -642,7 +578,7 @@ allocate_trampoline_table(struct intercept_desc *desc)
 		if (end < guess)
 			continue; /* No overlap, let's see the next mapping */
 
-		if (start >= guess + size) {
+		if (start >= guess + TRAMPOLINE_SIZE) {
 			/* The rest of the mappings can't possibly overlap */
 			break;
 		}
@@ -653,25 +589,21 @@ allocate_trampoline_table(struct intercept_desc *desc)
 		 */
 		guess = end;
 
-		if (guess + size >= desc->text_start + INT32_MAX) {
+		if (guess >= desc->text_start + JUMP_2GB_POS_REACH) {
 			/* Too far away */
-			xabort("unable to find place for trampoline table");
+			xabort("unable to find place for trampoline");
 		}
 	}
 
 	fclose(maps);
 
-	desc->trampoline_table = mmap(guess, size,
+	desc->trampoline_address = mmap(guess, TRAMPOLINE_SIZE,
 					PROT_READ | PROT_WRITE | PROT_EXEC,
 					MAP_FIXED | MAP_PRIVATE | MAP_ANON,
 					-1, 0);
 
-	if (desc->trampoline_table == MAP_FAILED)
-		xabort("unable to allocate space for trampoline table");
-
-	desc->trampoline_table_size = size;
-
-	desc->next_trampoline = desc->trampoline_table;
+	if (desc->trampoline_address == MAP_FAILED)
+		xabort("unable to allocate space for trampoline");
 }
 
 /*
@@ -702,7 +634,6 @@ find_syscalls(struct intercept_desc *desc)
 	    (uintptr_t)desc->text_start,
 	    (uintptr_t)desc->text_end);
 	allocate_jump_table(desc);
-	allocate_nop_table(desc);
 
 	for (Elf64_Half i = 0; i < desc->symbol_tables.count; ++i)
 		find_jumps_in_section_syms(desc,

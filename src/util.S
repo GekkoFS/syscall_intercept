@@ -30,38 +30,20 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-.global has_ymm_registers;
-.hidden has_ymm_registers;
-.type   has_ymm_registers, @function
+	.global	syscall_no_intercept
+	.type	syscall_no_intercept, @function
 
-.global syscall_no_intercept;
-.type   syscall_no_intercept, @function
-
-.text
-
-has_ymm_registers:
-	.cfi_startproc
-	pushq       %rbx
-	movq        $0x1, %rax
-	cpuid
-	movq        %rcx, %rax
-	shrq        $28, %rax
-	andq        $1, %rax
-	popq        %rbx
-	retq
-	.cfi_endproc
-
-.size   has_ymm_registers, .-has_ymm_registers
+	.text
 
 syscall_no_intercept:
-	movq        %rdi, %rax  /* convert from linux ABI calling */
-	movq        %rsi, %rdi  /* convention to syscall calling convention */
-	movq        %rdx, %rsi
-	movq        %rcx, %rdx
-	movq        %r8, %r10
-	movq        %r9, %r8
-	movq        8(%rsp), %r9
-	syscall
+	mv	a7, a0  /* convert from linux ABI calling */
+	mv	a0, a1  /* convention to syscall calling convention */
+	mv	a1, a2
+	mv	a2, a3
+	mv	a3, a4
+	mv	a4, a5
+	mv	a5, a6
+	ecall
 	ret
 
-.size   syscall_no_intercept, .-syscall_no_intercept
+	.size	syscall_no_intercept, .-syscall_no_intercept

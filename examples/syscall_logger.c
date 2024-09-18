@@ -849,7 +849,7 @@ start(void)
 	if (path == NULL)
 		syscall_no_intercept(SYS_exit_group, 3);
 
-	log_fd = (int)syscall_no_intercept(SYS_open,
+	log_fd = (int)syscall_no_intercept(SYS_openat, AT_FDCWD,
 			path, O_CREAT | O_RDWR, (mode_t)0700);
 
 	if (log_fd < 0)

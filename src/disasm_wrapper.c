@@ -57,6 +57,7 @@ struct intercept_disasm_context {
 /*
  * nop_vsnprintf - A dummy function, serving as a callback called by
  * the capstone implementation. The syscall_intercept library never makes
+
  * any use of string representation of instructions, but there seems to no
  * trivial way to use disassemble using capstone without it spending time
  * on printing syscalls. This seems to be the most that can be done in
@@ -86,11 +87,17 @@ intercept_disasm_init(const unsigned char *begin, const unsigned char *end)
 	context->begin = begin;
 	context->end = end;
 
+#ifdef __riscv_c
+	cs_mode disasm_rv = CS_MODE_RISCV64 | CS_MODE_RISCVC;
+#else
+	cs_mode disasm_rv = CS_MODE_RISCV64;
+#endif
+
 	/*
 	 * Initialize the disassembler.
 	 * The handle here must be passed to capstone each time it is used.
 	 */
-	if (cs_open(CS_ARCH_X86, CS_MODE_64, &context->handle) != CS_ERR_OK)
+	if (cs_open(CS_ARCH_RISCV, disasm_rv, &context->handle) != CS_ERR_OK)
 		xabort("cs_open");
 
 	/*
@@ -132,69 +139,100 @@ intercept_disasm_destroy(struct intercept_disasm_context *context)
 }
 
 /*
- * check_op - checks a single operand of an instruction, looking
- * for RIP relative addressing.
+ * Finds the value of a7 that is used for the TYPE_SML patch which relies on
+ * the static analysis of the disassemble. check_surrounding_instructions() in
+ * patcher.c uses this to find out which a7 value was set last before
+ * ecall. Because of the static nature of the TYPE_SML patch, TYPE_GW and
+ * TYPE_MID (both dynamically store the a7 value) are prioritized when choosing
+ * the patch type.
  */
-static void
-check_op(struct intercept_disasm_result *result, cs_x86_op *op,
-		const unsigned char *code)
+static inline void
+get_a7(struct intercept_disasm_result *result, struct cs_insn *insn)
 {
-	/*
-	 * the address the RIP register is going to contain during the
-	 * execution of this instruction
-	 */
-	const unsigned char *rip = code + result->length;
+	if (insn->detail->riscv.operands[0].reg != RISCV_REG_A7)
+		return;
 
-	if (op->type == X86_OP_REG) {
-		if (op->reg == X86_REG_IP ||
-				op->reg == X86_REG_RIP) {
-			/*
-			 * Example: mov %rip, %rax
-			 */
-			result->has_ip_relative_opr = true;
-			result->rip_disp = 0;
-			result->rip_ref_addr = rip;
+	switch (insn->id) {
+#ifdef __riscv_c
+	case RISCV_INS_C_LI:
+		result->a7_set = insn->detail->riscv.operands[1].imm;
+		return;
+#endif
+	case RISCV_INS_ADDI:
+		if (insn->detail->riscv.operands[1].reg == RISCV_REG_ZERO) {
+			result->a7_set = insn->detail->riscv.operands[2].imm;
+			return;
 		}
-		if (result->is_jump) {
-			/*
-			 * Example: jmp *(%rax)
-			 */
-			/*
-			 * An indirect jump can't have arguments other
-			 * than a register - therefore the asserts.
-			 * ( I'm 99.99% sure this is true )
-			 */
-			assert(!result->is_rel_jump);
-			result->is_indirect_jump = true;
+		/* fallthrough */
+	default:
+		if (insn->detail->riscv.operands[0].access > 0x1)
+			result->is_a7_modified = true;
+		return;
+	}
+}
+
+/*
+ * In asm_entry_point (intercept_irq_entry.S), ra is being used for jumping
+ * back and forth between executing preceding and following instrs, so it
+ * gets overwritten. That is why it's important to check if any patched instr
+ * uses ra. If they do (currently there is no such case), the original ra value
+ * is restored before executing the patched instrs.
+ */
+static inline void
+check_ra(struct intercept_disasm_result *result, struct cs_insn *insn)
+{
+	uint8_t op_c = insn->detail->riscv.op_count;
+	cs_riscv_op *ops = insn->detail->riscv.operands;
+
+	for (uint8_t i = 0; i < op_c; ++i) {
+		if (ops[i].type == RISCV_OP_REG && ops[i].reg == RISCV_REG_RA) {
+			result->is_ra_used = true;
+			return;
 		}
-	} else if (op->type == X86_OP_MEM) {
-		if (op->mem.base == X86_REG_IP ||
-				op->mem.base == X86_REG_RIP ||
-				op->mem.index == X86_REG_IP ||
-				op->mem.index == X86_REG_RIP ||
-				result->is_jump) {
-			result->has_ip_relative_opr = true;
-			assert(!result->is_indirect_jump);
+	}
+}
 
-			if (result->is_jump)
-				result->is_rel_jump = true;
+/*
+ * This helps only the TYPE_SML patch when there is a register which gets set
+ * immediately after ecall. In these situations (which are quite frequent) the
+ * patching size is only 4 bytes (in that case, only ecall gets replaced with jal)
+ * because on the way back to glibc, the register that gets set immediately after
+ * ecall is used for the absolute jump.
+ */
+static inline void
+check_reg_set(struct intercept_disasm_result *result, struct cs_insn *insn)
+{
+	cs_riscv_op op0 = insn->detail->riscv.operands[0];
+	cs_riscv_op op1 = insn->detail->riscv.operands[1];
 
-			assert(op->mem.disp <= INT32_MAX);
-			assert(op->mem.disp >= INT32_MIN);
+	if (op0.access == 0x2 && (op0.type != op1.type || op0.reg != op1.reg))
+		result->reg_set = op0.reg - 1;
+#ifdef __riscv_c
+	// ra implicitly overwritten
+	else if (insn->id == RISCV_INS_C_JAL || (insn->id == RISCV_INS_C_JALR &&
+			op0.reg != RISCV_REG_RA))
+		result->reg_set = RISCV_REG_RA - 1;
+#endif
+}
 
-			result->rip_disp = (int32_t)op->mem.disp;
-			result->rip_ref_addr = rip + result->rip_disp;
-		}
-	} else if (op->type == X86_OP_IMM) {
-		if (result->is_jump) {
-			assert(!result->is_indirect_jump);
-			result->has_ip_relative_opr = true;
-			result->is_rel_jump = true;
-			result->rip_ref_addr = (void *)op->imm;
+/*
+ * Just check which jump is used here (absolute or relative) and save the
+ * destination of the relative jumps. Used for jump_table...
+ */
+static inline void
+check_jump(struct intercept_disasm_result *result, struct cs_insn *insn,
+		const uint8_t *code)
+{
+	uint8_t op_c = insn->detail->riscv.op_count;
+	cs_riscv_op *ops = insn->detail->riscv.operands;
 
-			result->rip_disp =
-			    (int32_t)((unsigned char *)op->imm - rip);
-		}
+	if (insn->id == RISCV_INS_JALR || insn->id == RISCV_INS_C_JALR ||
+			insn->id == RISCV_INS_C_JR) {
+		result->is_abs_jump = true;
+	} else if (ops[op_c - 1].type == RISCV_OP_IMM) {
+		result->has_ip_relative_opr = true;
+		result->rip_disp = ops[op_c - 1].imm;
+		result->rip_ref_addr = code + ops[op_c - 1].imm;
 	}
 }
 
@@ -205,25 +243,16 @@ check_op(struct intercept_disasm_result *result, cs_x86_op *op,
  */
 struct intercept_disasm_result
 intercept_disasm_next_instruction(struct intercept_disasm_context *context,
-					const unsigned char *code)
+					const uint8_t *code)
 {
-	static const unsigned char endbr64[] = {0xf3, 0x0f, 0x1e, 0xfa};
-
-	struct intercept_disasm_result result = {.address = code, 0, };
+	struct intercept_disasm_result result = {
+		.address = code,
+		// syscall can be 0 so set it to -1 initially
+		.a7_set = -1
+	};
 	const unsigned char *start = code;
 	size_t size = (size_t)(context->end - code + 1);
 	uint64_t address = (uint64_t)code;
-
-	if (size >= sizeof(endbr64) &&
-	    memcmp(code, endbr64, sizeof(endbr64)) == 0) {
-		result.is_set = true;
-		result.is_endbr = true;
-		result.length = 4;
-#ifndef NDEBUG
-		result.mnemonic = "endbr64";
-#endif
-		return result;
-	}
 
 	if (!cs_disasm_iter(context->handle, &start, &size,
 	    &address, context->insn)) {
@@ -234,85 +263,35 @@ intercept_disasm_next_instruction(struct intercept_disasm_context *context,
 
 	assert(result.length != 0);
 
-	result.is_syscall = (context->insn->id == X86_INS_SYSCALL);
-	result.is_call = (context->insn->id == X86_INS_CALL);
-	result.is_ret = (context->insn->id == X86_INS_RET);
-	result.is_rel_jump = false;
-	result.is_indirect_jump = false;
-#ifndef NDEBUG
-	result.mnemonic = context->insn->mnemonic;
-#endif
-
-	switch (context->insn->id) {
-		case X86_INS_JAE:
-		case X86_INS_JA:
-		case X86_INS_JBE:
-		case X86_INS_JB:
-		case X86_INS_JCXZ:
-		case X86_INS_JECXZ:
-		case X86_INS_JE:
-		case X86_INS_JGE:
-		case X86_INS_JG:
-		case X86_INS_JLE:
-		case X86_INS_JL:
-		case X86_INS_JMP:
-		case X86_INS_JNE:
-		case X86_INS_JNO:
-		case X86_INS_JNP:
-		case X86_INS_JNS:
-		case X86_INS_JO:
-		case X86_INS_JP:
-		case X86_INS_JRCXZ:
-		case X86_INS_JS:
-		case X86_INS_LOOP:
-		case X86_INS_CALL:
-			result.is_jump = true;
-			assert(context->insn->detail->x86.op_count == 1);
-			break;
-		case X86_INS_NOP:
-			result.is_nop = true;
-			break;
-		default:
-			result.is_jump = false;
-			break;
-	}
-
-	result.has_ip_relative_opr = false;
+	get_a7(&result, context->insn);
+	check_ra(&result, context->insn);
+	check_reg_set(&result, context->insn);
 
 	/*
-	 * Loop over all operands of the instruction currently being decoded.
-	 * These operands are decoded by capstone, and described in the
-	 * context->insn->detail->x86.operands array.
-	 *
-	 * This operand checking serves multiple purposes:
-	 * The destination of any jumping instruction is found here,
-	 * The instructions using RIP relative addressing are found by this
-	 *  loop, e.g.: mov %rax, 0x36eb55d(%rip)
-	 *
-	 * Any instruction relying on the value of the RIP register can not
-	 * be relocated ( including relative jumps, which naturally also
-	 * rely on the RIP register ).
+	 * auipc could be patched and relocated, but the absolute addr would
+	 * have to be loaded into the register in the relocation space which
+	 * is costly.
+	 * For now just skip it unless it becomes needed in the future...
 	 */
-	for (uint8_t op_i = 0;
-	    op_i < context->insn->detail->x86.op_count; ++op_i)
-		check_op(&result, context->insn->detail->x86.operands + op_i,
-		    code);
+	result.has_ip_relative_opr = (context->insn->id == RISCV_INS_AUIPC);
+	result.is_syscall = (context->insn->id == RISCV_INS_ECALL);
 
-	result.is_lea_rip = (context->insn->id == X86_INS_LEA &&
-			result.has_ip_relative_opr);
-
-	if (result.is_lea_rip) {
-		/*
-		 * Extract the four bits from the encoding, which
-		 * specify the destination register.
-		 */
-
-		/* one bit from the REX prefix */
-		result.arg_register_bits = ((code[0] & 4) << 1);
-
-		/* three bits from the ModRM byte */
-		result.arg_register_bits |= ((code[2] >> 3) & 7);
+#ifndef NDEBUG
+	strncpy(result.mnemonic, context->insn->mnemonic,
+		sizeof(result.mnemonic) - 1);
+#endif
+	uint8_t grp_count = context->insn->detail->groups_count;
+	for (uint8_t i = 0; i < grp_count; ++i) {
+		switch (context->insn->detail->groups[i]) {
+		case RISCV_GRP_RET:
+		case RISCV_GRP_CALL:
+		case RISCV_GRP_JUMP:
+		case RISCV_GRP_BRANCH_RELATIVE:
+			check_jump(&result, context->insn, code);
+			goto grp_done;
+		}
 	}
+grp_done:
 
 	result.is_set = true;
 
