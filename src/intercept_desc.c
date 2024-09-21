@@ -331,7 +331,7 @@ has_pow2_count(const struct intercept_desc *desc)
 {
 #ifdef __riscv_zbb
 	bool ret;
-	asm volatile (
+	__asm__ volatile (
 		"cpop %0, %1\n\t"
 		"sltiu %0, %0, 2\n\t"
 		: "=r" (ret)
