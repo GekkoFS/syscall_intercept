@@ -577,13 +577,14 @@ struct wrapper_ret
 detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr,
 			uint64_t GW_ret_addr)
 {
-	struct patch_desc *patch;
+	struct patch_desc *patch = NULL;
 	// sign-extend syscall_num to register size
-	int64_t syscall_num;
-	uint64_t reloc_addr;
+	int64_t syscall_num = INT64_MIN;
+	uint64_t reloc_addr = 0;
 	uint64_t ret_addrs[3] = {MID_ret_addr, SML_ret_addr, GW_ret_addr};
+	uint8_t ra_idx = 0;
 
-	for (uint8_t ra_idx = 0; ra_idx < sizeof(ret_addrs); ++ra_idx) {
+	for (; ra_idx < sizeof(ret_addrs); ++ra_idx) {
 		for (uint32_t o = 0; o < objs_count; ++o) {
 			for (uint32_t p = 0; p < objs[o].count; ++p) {
 
@@ -613,13 +614,16 @@ detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr,
 	}
 ret_to_irq_entry:
 
+	if (ra_idx >= sizeof(ret_addrs))
+		xabort("Failed to identify patch");
+
 	return (struct wrapper_ret){.a0 = syscall_num, .a1 = reloc_addr};
 }
 
 struct patch_desc *
 get_cur_patch(int64_t return_address)
 {
-	struct patch_desc *patch;
+	struct patch_desc *patch = NULL;
 
 	for (uint32_t o = 0; o < objs_count; ++o) {
 		for (uint32_t p = 0; p < objs[o].count; ++p) {
