@@ -160,9 +160,13 @@ allocate_jump_table(struct intercept_desc *desc)
 	assert(desc->text_start < desc->text_end);
 	size_t bytes = (size_t)(desc->text_end - desc->text_start + 1);
 
-	/* Allocate 1 bit for each addressable byte */
+	/*
+	 * RISC-V: Allocate 1 bit for every even address because all RISC-V
+	 *         instructions are aligned to 2 bytes.
+	 *         Divide by 16 instead of 8...
+	 */
 	/* Plus one -- integer division can result a number too low */
-	desc->jump_table = xmmap_anon(bytes / 8 + 1);
+	desc->jump_table = xmmap_anon(bytes / 16 + 1);
 }
 
 /*
@@ -171,7 +175,7 @@ allocate_jump_table(struct intercept_desc *desc)
 static bool
 is_bit_set(const unsigned char *table, uint64_t offset)
 {
-	return table[offset / 8] & (1 << (offset % 8));
+	return table[offset / 16] & (1 << (offset / 2 % 8));
 }
 
 /*
@@ -180,8 +184,8 @@ is_bit_set(const unsigned char *table, uint64_t offset)
 static void
 set_bit(unsigned char *table, uint64_t offset)
 {
-	unsigned char tmp = (unsigned char)(1 << (offset % 8));
-	table[offset / 8] |= tmp;
+	unsigned char tmp = (unsigned char)(1 << (offset / 2 % 8));
+	table[offset / 16] |= tmp;
 }
 
 /*
