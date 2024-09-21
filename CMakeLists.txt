@@ -96,6 +96,22 @@ add_library(syscall_intercept_base_c OBJECT ${SOURCES_C})
 add_library(syscall_intercept_base_asm OBJECT ${SOURCES_ASM})
 add_library(syscall_intercept_base_clf OBJECT src/cmdline_filter.c)
 
+# Get all supported ISA extensions
+execute_process(
+    COMMAND grep -Pom 1 "^isa\\s*:\\s*\\K.*" /proc/cpuinfo
+    OUTPUT_VARIABLE ISA_EXTENSIONS
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+if(DEFINED ISA_EXTENSIONS AND NOT ISA_EXTENSIONS STREQUAL "")
+	message(STATUS "Detected ISA extensions: ${ISA_EXTENSIONS}")
+	target_compile_options(syscall_intercept_base_c
+				PUBLIC "-march=${ISA_EXTENSIONS}")
+	target_compile_options(syscall_intercept_base_asm
+				PUBLIC "-march=${ISA_EXTENSIONS}")
+	target_compile_options(syscall_intercept_base_clf
+				PUBLIC "-march=${ISA_EXTENSIONS}")
+endif()
+
 if(HAS_NOUNUSEDARG)
 	target_compile_options(syscall_intercept_base_asm BEFORE
 		PRIVATE "-Wno-unused-command-line-argument")
