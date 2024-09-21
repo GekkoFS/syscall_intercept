@@ -4,3 +4,6 @@ tags
 /.settings
 /build-deb
 /syscall_intercept-*.tar.gz
+/build
+.gdbinit
+.gdb_history
