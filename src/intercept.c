@@ -637,6 +637,23 @@ get_cur_patch(int64_t return_address)
 }
 
 /*
+ * intercept_routine_post_clone
+ * The routine called by an assembly wrapper when a clone syscall returns zero,
+ * and a new stack pointer is used in the child thread.
+ */
+void
+intercept_routine_post_clone(int64_t a0)
+{
+	if (a0 == 0) {
+		if (intercept_hook_point_clone_child != NULL)
+			intercept_hook_point_clone_child();
+	} else {
+		if (intercept_hook_point_clone_parent != NULL)
+			intercept_hook_point_clone_parent(a0);
+	}
+}
+
+/*
  * intercept_routine(...)
  * This is the function called from the asm wrappers,
  * forwarding the syscall parameters to a hook function
@@ -696,13 +713,13 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 
 	if (intercept_hook_point != NULL)
 		forward_to_kernel = intercept_hook_point(desc.nr,
-		    desc.args[0],
-		    desc.args[1],
-		    desc.args[2],
-		    desc.args[3],
-		    desc.args[4],
-		    desc.args[5],
-		    &result);
+					desc.args[0],
+					desc.args[1],
+					desc.args[2],
+					desc.args[3],
+					desc.args[4],
+					desc.args[5],
+					&result);
 
 	if (desc.nr == SYS_rt_sigreturn) {
 		/* can't handle these syscalls the normal way */
@@ -740,26 +757,23 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 					desc.args[4],
 					desc.args[5]);
 		}
+
+		/*
+		 * For consistency among all clone variants, from the user's
+		 * perspective, offer execution of intercept_routine_post_clone
+		 * hooks even when the child and parent share stack space
+		 * (fork) and the 'KNOWN' logging is done here successfully
+		 * after the clone syscall (syscall_no_intercept).
+		 */
+		if (desc.nr == SYS_clone)
+			intercept_routine_post_clone(result);
+#ifdef SYS_clone3
+		else if (desc.nr == SYS_clone3)
+			intercept_routine_post_clone(result);
+#endif
 	}
 
 	intercept_log_syscall(patch, &desc, KNOWN, result);
 
 	return (struct wrapper_ret){.a0 = result, .a1 = 1};
-}
-
-/*
- * intercept_routine_post_clone
- * The routine called by an assembly wrapper when a clone syscall returns zero,
- * and a new stack pointer is used in the child thread.
- */
-void
-intercept_routine_post_clone(int64_t a0)
-{
-	if (a0 == 0) {
-		if (intercept_hook_point_clone_child != NULL)
-			intercept_hook_point_clone_child();
-	} else {
-		if (intercept_hook_point_clone_parent != NULL)
-			intercept_hook_point_clone_parent(a0);
-	}
 }
