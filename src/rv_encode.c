@@ -94,12 +94,60 @@ rvc_ldsp(uint8_t *instr_buff, uint8_t rd, int32_t imm)
 {
 	if (imm < 0 || imm % 8 != 0 || imm / 8 >= 0x40)
 		return 0;
+	else if (rd == REG_ZERO)
+		return 0;
 
 	uint16_t instr = 0;
 	imm /= 8;
 
 	instr = 0x3 << 13 | (imm >> 2 & 0x1) << 12 | rd << 7;
 	instr |= (imm & 0x3) << 5 | (imm >> 3 & 0x7) << 2 | 0x2;
+
+	reverse_byte_order(instr_buff, instr, RVC_INS_SIZE);
+
+	return RVC_INS_SIZE;
+}
+
+uint8_t
+rvc_sd(uint8_t *instr_buff, uint8_t rs1, uint8_t rs2, int32_t imm)
+{
+	if (imm < 0 || imm % 8 != 0 || imm / 8 >= 0x20)
+		return 0;
+	else if (rs1 < REG_S0 || rs1 > REG_A5)
+		return 0;
+	else if (rs2 < REG_S0 || rs2 > REG_A5)
+		return 0;
+
+	uint16_t instr = 0;
+	rs1 -= REG_S0;
+	rs2 -= REG_S0;
+	imm /= 8;
+
+	instr = 0x7 << 13 | (imm & 0x7) << 10 | rs2 << 7;
+	instr |= (imm >> 3 & 0x3) << 5 | rs1 << 2 | 0x0;
+
+	reverse_byte_order(instr_buff, instr, RVC_INS_SIZE);
+
+	return RVC_INS_SIZE;
+}
+
+uint8_t
+rvc_ld(uint8_t *instr_buff, uint8_t rd, uint8_t rs, int32_t imm)
+{
+	if (imm < 0 || imm % 8 != 0 || imm / 8 >= 0x20)
+		return 0;
+	else if (rd < REG_S0 || rd > REG_A5)
+		return 0;
+	else if (rs < REG_S0 || rs > REG_A5)
+		return 0;
+
+	uint16_t instr = 0;
+	rd -= REG_S0;
+	rs -= REG_S0;
+	imm /= 8;
+
+	instr = 0x3 << 13 | (imm & 0x7) << 10 | rs << 7;
+	instr |= (imm >> 3 & 0x3) << 5 | rd << 2 | 0x0;
 
 	reverse_byte_order(instr_buff, instr, RVC_INS_SIZE);
 
@@ -426,31 +474,35 @@ rvpc_addisp(uint8_t *instr_buff, int32_t imm)
 }
 
 uint8_t
-rvpc_sdsp(uint8_t *instr_buff, uint8_t rs, int32_t imm)
+rvpc_sd(uint8_t *instr_buff, uint8_t rs1, uint8_t rs2, int32_t imm)
 {
 	uint8_t total_size;
 
 #ifdef __riscv_c
-	if ((total_size = rvc_sdsp(instr_buff, rs, imm)) == 0)
-		total_size = rv_sd(instr_buff, rs, REG_SP, imm);
-#else
-	total_size = rv_sd(instr_buff, rs, REG_SP, imm);
+	if (rs2 == REG_SP && (total_size = rvc_sdsp(instr_buff, rs1, imm)) != 0)
+		return total_size;
+	else if ((total_size = rvc_sd(instr_buff, rs1, rs2, imm)) != 0)
+		return total_size;
 #endif
+
+	total_size = rv_sd(instr_buff, rs1, rs2, imm);
 
 	return total_size;
 }
 
 uint8_t
-rvpc_ldsp(uint8_t *instr_buff, uint8_t rd, int32_t imm)
+rvpc_ld(uint8_t *instr_buff, uint8_t rd, uint8_t rs, int32_t imm)
 {
 	uint8_t total_size;
 
 #ifdef __riscv_c
-	if ((total_size = rvc_ldsp(instr_buff, rd, imm)) == 0)
-		total_size = rv_ld(instr_buff, rd, REG_SP, imm);
-#else
-	total_size = rv_ld(instr_buff, rd, REG_SP, imm);
+	if (rs == REG_SP && (total_size = rvc_ldsp(instr_buff, rd, imm)) != 0)
+		return total_size;
+	else if ((total_size = rvc_ld(instr_buff, rd, rs, imm)) != 0)
+		return total_size;
 #endif
+
+	total_size = rv_ld(instr_buff, rd, rs, imm);
 
 	return total_size;
 }

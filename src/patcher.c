@@ -406,16 +406,11 @@ align_start_addr_and_size(struct patch_desc *patch,
 static void
 load_orig_ra(uint8_t **dst)
 {
-	uint8_t instrs_buff[MAX_P_INS_SIZE];
+	uint8_t instrs_buff[MAX_PC_INS_SIZE];
 	uint8_t instrs_size;
 
-	/*
-	instrs_size = rvp_ld_from_sym(instrs_buff, REG_RA, (uintptr_t)*dst,
-					(uintptr_t)&asm_ra_orig);
-					*/
-	instrs_size = rv_ld(instrs_buff, REG_RA, REG_TP,
+	instrs_size = rvpc_ld(instrs_buff, REG_RA, REG_TP,
 				(int32_t)tls_offset_table.asm_ra_orig);
-
 
 	memcpy(*dst, instrs_buff, instrs_size);
 	*dst += instrs_size;
@@ -424,27 +419,13 @@ load_orig_ra(uint8_t **dst)
 static void
 load_orig_ra_temp(uint8_t **dst)
 {
-	uint8_t instrs_buff[MAX_PC_INS_SIZE * 4 + MAX_P_INS_SIZE * 2];
+	uint8_t instrs_buff[MAX_PC_INS_SIZE * 2];
 	uint8_t instrs_size = 0;
 
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -16);
-	instrs_size += rvpc_sdsp(instrs_buff + instrs_size, REG_T0, 0);
-
-	/*
-	instrs_size += rvp_sd_to_sym(instrs_buff + instrs_size, REG_T0, REG_RA,
-					(uintptr_t)*dst + instrs_size,
-					(uintptr_t)&asm_ra_temp);
-	instrs_size += rvp_ld_from_sym(instrs_buff + instrs_size, REG_RA,
-					(uintptr_t)*dst + instrs_size,
-					(uintptr_t)&asm_ra_orig);
-					*/
-	instrs_size += rv_sd(instrs_buff + instrs_size, REG_RA, REG_TP,
+	instrs_size += rvpc_sd(instrs_buff + instrs_size, REG_RA, REG_TP,
 				(int32_t)tls_offset_table.asm_ra_temp);
-	instrs_size += rv_ld(instrs_buff + instrs_size, REG_RA, REG_TP,
+	instrs_size += rvpc_ld(instrs_buff + instrs_size, REG_RA, REG_TP,
 				(int32_t)tls_offset_table.asm_ra_orig);
-
-	instrs_size += rvpc_ldsp(instrs_buff + instrs_size, REG_T0, 0);
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 16);
 
 	memcpy(*dst, instrs_buff, instrs_size);
 	*dst += instrs_size;
@@ -453,27 +434,13 @@ load_orig_ra_temp(uint8_t **dst)
 static void
 store_new_ra_temp(uint8_t **dst)
 {
-	uint8_t instrs_buff[MAX_PC_INS_SIZE * 4 + MAX_P_INS_SIZE * 2];
+	uint8_t instrs_buff[MAX_PC_INS_SIZE * 2];
 	uint8_t instrs_size = 0;
 
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -16);
-	instrs_size += rvpc_sdsp(instrs_buff + instrs_size, REG_T0, 0);
-
-	/*
-	instrs_size += rvp_sd_to_sym(instrs_buff + instrs_size, REG_T0, REG_RA,
-					(uintptr_t)*dst + instrs_size,
-					(uintptr_t)&asm_ra_orig);
-	instrs_size += rvp_ld_from_sym(instrs_buff + instrs_size, REG_RA,
-					(uintptr_t)*dst + instrs_size,
-					(uintptr_t)&asm_ra_temp);
-					*/
-	instrs_size += rv_sd(instrs_buff + instrs_size, REG_RA, REG_TP,
+	instrs_size += rvpc_sd(instrs_buff + instrs_size, REG_RA, REG_TP,
 				(int32_t)tls_offset_table.asm_ra_orig);
-	instrs_size += rv_ld(instrs_buff + instrs_size, REG_RA, REG_TP,
+	instrs_size += rvpc_ld(instrs_buff + instrs_size, REG_RA, REG_TP,
 				(int32_t)tls_offset_table.asm_ra_temp);
-
-	instrs_size += rvpc_ldsp(instrs_buff + instrs_size, REG_T0, 0);
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 16);
 
 	memcpy(*dst, instrs_buff, instrs_size);
 	*dst += instrs_size;
@@ -494,7 +461,7 @@ copy_jump(uint8_t **dst, uint8_t rd, uint8_t rs, int16_t offset)
 static void
 finalize_and_jump_back(uint8_t **dst, struct patch_desc *patch)
 {
-	uint8_t instrs_buff[MAX_PC_INS_SIZE * 3 + MAX_P_INS_SIZE];
+	uint8_t instrs_buff[MAX_PC_INS_SIZE * 4];
 	uint8_t instrs_size = 0;
 	// this is the offset for TYPE_MID
 	uint8_t ra_offset = 8;
@@ -507,8 +474,8 @@ finalize_and_jump_back(uint8_t **dst, struct patch_desc *patch)
 		/* fallthrough */
 	case TYPE_MID:
 		instrs_size += rvpc_addisp(instrs_buff + instrs_size, -16);
-		instrs_size += rvpc_sdsp(instrs_buff + instrs_size,
-						REG_RA, ra_offset);
+		instrs_size += rvpc_sd(instrs_buff + instrs_size,
+					REG_RA, REG_SP, ra_offset);
 		break;
 	default:
 		if (!patch->return_register)
@@ -516,12 +483,7 @@ finalize_and_jump_back(uint8_t **dst, struct patch_desc *patch)
 		break;
 	}
 
-	/*
-	instrs_size += rvp_ld_from_sym(instrs_buff + instrs_size, ret_reg,
-					(uintptr_t)*dst + instrs_size,
-					(uintptr_t)&asm_return_address);
-					*/
-	instrs_size += rv_ld(instrs_buff + instrs_size, ret_reg, REG_TP,
+	instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_TP,
 				(int32_t)tls_offset_table.asm_return_address);
 
 	instrs_size += rvpc_jalr(instrs_buff + instrs_size, REG_ZERO, ret_reg, 0);
@@ -661,7 +623,7 @@ copy_trampoline(uint8_t *trampoline_address)
 	uint8_t instrs_size = 0;
 
 	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -16);
-	instrs_size += rvpc_sdsp(instrs_buff + instrs_size, REG_RA, 0);
+	instrs_size += rvpc_sd(instrs_buff + instrs_size, REG_RA, REG_SP, 0);
 
 	instrs_size += rvp_jump_abs(instrs_buff + instrs_size, REG_ZERO,
 					REG_RA, destination);
@@ -698,12 +660,12 @@ copy_GW(struct intercept_desc *desc, const struct patch_desc *patch)
 #endif
 
 	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -16);
-	instrs_size += rvpc_sdsp(instrs_buff + instrs_size, ret_reg, 0);
+	instrs_size += rvpc_sd(instrs_buff + instrs_size, ret_reg, REG_SP, 0);
 
 	instrs_size += rvp_jump_2GB(instrs_buff + instrs_size, ret_reg, ret_reg,
 					jalr_addr, destination);
 
-	instrs_size += rvpc_ldsp(instrs_buff + instrs_size, ret_reg, 0);
+	instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 0);
 	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 16);
 
 #ifdef __riscv_c
@@ -719,12 +681,12 @@ copy_GW(struct intercept_desc *desc, const struct patch_desc *patch)
 static void
 copy_MID(const struct patch_desc *patch)
 {
-	uint8_t instrs_buff[MAX_PC_INS_SIZE * 5 + RVC_INS_SIZE * 2];
+	uint8_t instrs_buff[MAX_PC_INS_SIZE * 6 + MAX_P_INS_SIZE];
 	uint8_t instrs_size = 0;
 	uint8_t *patch_start_addr = (uint8_t *)patch->return_address -
-							JAL_INS_SIZE -
-							STORE_LOAD_INS_SIZE -
-							MODIFY_SP_INS_SIZE;
+						JAL_INS_SIZE -
+						STORE_LOAD_INS_SIZE -
+						MODIFY_SP_INS_SIZE;
 	uint8_t ret_reg = patch->return_register;
 	uintptr_t GW_entry_addr = (uintptr_t)patch->dst_jmp_patch;
 	uintptr_t jal_addr = (uintptr_t)patch->return_address - JAL_INS_SIZE;
@@ -737,12 +699,12 @@ copy_MID(const struct patch_desc *patch)
 #endif
 
 	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -16);
-	instrs_size += rvpc_sdsp(instrs_buff + instrs_size, ret_reg, 8);
+	instrs_size += rvpc_sd(instrs_buff + instrs_size, ret_reg, REG_SP, 8);
 
 	instrs_size += rvp_jal(instrs_buff + instrs_size, ret_reg,
 				jal_addr, GW_entry_addr);
 
-	instrs_size += rvpc_ldsp(instrs_buff + instrs_size, ret_reg, 8);
+	instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 8);
 	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 16);
 
 #ifdef __riscv_c
@@ -758,7 +720,7 @@ copy_MID(const struct patch_desc *patch)
 static void
 copy_SML(const struct patch_desc *patch)
 {
-	uint8_t instrs_buff[MAX_PC_INS_SIZE * 2 + RVC_INS_SIZE * 2];
+	uint8_t instrs_buff[MAX_PC_INS_SIZE * 3 + MAX_P_INS_SIZE];
 	uint8_t instrs_size = 0;
 	uint8_t *patch_start_addr = (uint8_t *)patch->return_address -
 							JAL_INS_SIZE;

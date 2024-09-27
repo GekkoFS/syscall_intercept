@@ -5,9 +5,6 @@
 /* Generic instruction sizes */
 #define RV_INS_SIZE		4
 #define RVC_INS_SIZE		2
-#define MAX_PC_INS_SIZE		RV_INS_SIZE
-// max size of the biggest pseudo instr (currently rvp_jump_abs)
-#define MAX_P_INS_SIZE		24
 
 /* Sizes of some frequently used instructions */
 #ifdef __riscv_c
@@ -60,6 +57,10 @@
 #define JUMP_2GB_NEG_REACH	INT32_MIN
 #define JUMP_2GB_POS_REACH	(INT32_MAX - 0xfff)
 
+/* Pseudo instructions max sizes */
+#define MAX_PC_INS_SIZE		RV_INS_SIZE
+// max size of the biggest pseudo instruction, currently rvp_jump_abs()
+#define MAX_P_INS_SIZE		JUMP_ABS_INS_SIZE
 
 
 enum {
@@ -132,8 +133,8 @@ uint8_t rvpc_addiw(uint8_t *instr_buff, uint8_t rd, uint8_t rs, int32_t imm);
 uint8_t rvpc_slli(uint8_t *instr_buff, uint8_t rd, uint8_t rs, int32_t imm);
 uint8_t rvpc_li(uint8_t *instr_buff, uint8_t rd, int32_t imm);
 uint8_t rvpc_addisp(uint8_t *instr_buff, int32_t imm);
-uint8_t rvpc_sdsp(uint8_t *instr_buff, uint8_t rs, int32_t imm);
-uint8_t rvpc_ldsp(uint8_t *instr_buff, uint8_t rd, int32_t imm);
+uint8_t rvpc_sd(uint8_t *instr_buff, uint8_t rs1, uint8_t rs2, int32_t imm);
+uint8_t rvpc_ld(uint8_t *instr_buff, uint8_t rd, uint8_t rs, int32_t imm);
 uint8_t rvpc_jalr(uint8_t *instr_buff, uint8_t rd, uint8_t rs, int32_t imm);
 
 /*
