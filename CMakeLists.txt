@@ -96,21 +96,55 @@ add_library(syscall_intercept_base_c OBJECT ${SOURCES_C})
 add_library(syscall_intercept_base_asm OBJECT ${SOURCES_ASM})
 add_library(syscall_intercept_base_clf OBJECT src/cmdline_filter.c)
 
-# Get all supported ISA extensions
-execute_process(
-    COMMAND grep -Pom 1 "^isa\\s*:\\s*\\K.*" /proc/cpuinfo
-    OUTPUT_VARIABLE ISA_EXTENSIONS
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-)
-if(DEFINED ISA_EXTENSIONS AND NOT ISA_EXTENSIONS STREQUAL "")
-	message(STATUS "Detected ISA extensions: ${ISA_EXTENSIONS}")
-	target_compile_options(syscall_intercept_base_c
-				PUBLIC "-march=${ISA_EXTENSIONS}")
-	target_compile_options(syscall_intercept_base_asm
-				PUBLIC "-march=${ISA_EXTENSIONS}")
-	target_compile_options(syscall_intercept_base_clf
-				PUBLIC "-march=${ISA_EXTENSIONS}")
-endif()
+function(set_isa_extensions)
+	# Get all supported ISA extensions from /proc/cpuinfo
+	execute_process(
+		COMMAND grep -Pom 1 "^isa\\s*:\\s*\\K.*" /proc/cpuinfo
+		OUTPUT_VARIABLE isa_extensions
+		ERROR_FILE /dev/null
+		OUTPUT_STRIP_TRAILING_WHITESPACE
+	)
+	if(NOT DEFINED isa_extensions OR isa_extensions STREQUAL "")
+		return()
+	endif()
+
+	# Check if compiler supports extensions that were found
+	execute_process(
+		COMMAND gcc -march=${isa_extensions} -c -x c /dev/null
+		OUTPUT_FILE /dev/null
+		ERROR_FILE /dev/null
+		RESULT_VARIABLE comp_result
+	)
+
+	# If compiling failed, remove [su] as those are modes and not extensions
+	if(NOT comp_result EQUAL 0)
+		string(FIND "${isa_extensions}" "_" underscore_idx)
+		string(SUBSTRING "${isa_extensions}" 0 ${underscore_idx} prefix)
+		string(SUBSTRING "${isa_extensions}" ${underscore_idx} -1 suffix)
+		string(REGEX REPLACE "[su]" "" prefix "${prefix}")
+		set(isa_extensions "${prefix}${suffix}")
+
+		execute_process(
+			COMMAND gcc -march=${isa_extensions} -c -x c /dev/null
+			OUTPUT_FILE /dev/null
+			ERROR_FILE /dev/null
+			RESULT_VARIABLE comp_result
+		)
+	endif()
+
+	# If compilation test succeeded, add those extensions to compiling process
+	if(comp_result EQUAL 0)
+		message(STATUS "Detected ISA extensions: ${isa_extensions}")
+		target_compile_options(syscall_intercept_base_c
+					PUBLIC "-march=${isa_extensions}")
+		target_compile_options(syscall_intercept_base_asm
+					PUBLIC "-march=${isa_extensions}")
+		target_compile_options(syscall_intercept_base_clf
+					PUBLIC "-march=${isa_extensions}")
+	endif()
+endfunction()
+
+set_isa_extensions()
 
 if(HAS_NOUNUSEDARG)
 	target_compile_options(syscall_intercept_base_asm BEFORE
