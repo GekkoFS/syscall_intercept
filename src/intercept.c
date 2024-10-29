@@ -739,8 +739,9 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		 * the clone_child_intercept_routine instead, executing
 		 * it on the new child threads stack, then returns to libc.
 		 */
-		if (desc.nr == SYS_clone && desc.args[1] != 0) {
 			return (struct wrapper_ret){.a0 = -1, .a1 = 2};
+		if (desc.nr == SYS_clone && (desc.args[1] != 0 ||
+				desc.args[0] & CLONE_VFORK)) {
 		}
 #ifdef SYS_clone3
 		else if (desc.nr == SYS_clone3 &&
