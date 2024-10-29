@@ -1,5 +1,6 @@
 /*
- * Copyright 2016-2020, Intel Corporation
+ * Copyright 2016-2024, Intel Corporation
+ * Contributor: Petar Andrić
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -216,17 +217,15 @@ void activate_patches(struct intercept_desc *desc);
 				STORE_LOAD_INS_SIZE + \
 				MODIFY_SP_INS_SIZE)
 
-#define TRAMPOLINE_SIZE 	(MODIFY_SP_INS_SIZE + \
-				STORE_LOAD_INS_SIZE + \
+#define TRAMPOLINE_SIZE 	(STORE_LOAD_INS_SIZE + \
 				JUMP_ABS_INS_SIZE)
 /*
  * When the trampoline is not used, the GW jumps directly to asm_entry_point
- * but with a small offset because the first two instructions in asm_entry_point
- * are there to restore the GW's ra that was overwritten by the trampoline.
- * This is clearly not necessary when the GW jumps directly.
+ * to store its ra in 24(sp) (first instruction in asm_entry_point). Trampoline
+ * already stored GW's ra in 24(sp), so it has to skip that by jumping with a
+ * small offset (TRAMPOLINE_JUMP_OFFSET).
  */
-#define DIRECT_JUMP_OFFSET	(STORE_LOAD_INS_SIZE + \
-				MODIFY_SP_INS_SIZE)
+#define TRAMPOLINE_JUMP_OFFSET	STORE_LOAD_INS_SIZE
 
 extern const char *cmdline;
 

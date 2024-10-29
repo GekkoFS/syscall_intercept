@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2017, Intel Corporation
+ * Copyright 2024, Petar Andrić
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -31,55 +31,48 @@
  */
 
 /*
- * intercept_irq_entry.S -- see asm_wrapper.md
+ * intercept_irq_entry.S -- TODO: docs
  */
 
 	/* Constants */
 	// the final size is determined in runtime, but this is the minimum size
 	.equ	RELOCATION_SIZE, 0x80000
 	/*
-	 * This offset already exists due to patching. To restore the original
-	 * sp of a patch, this gets added to sp before executing patch instrs.
+	 * sp is reduced by this offset in glibc due to patching. Before executing
+	 * relocated instrs, sp is increased by this const to restore orig value.
 	 */
-	.equ	GLIBC_SP_OFF, 16
-	// sp offset done on the trampoline, add to sp if the trampoline is used
-	.equ	TRAMPOLINE_SP_OFF, 16
+	.equ	GLIBC_SP_OFF, 32
+	// first 2 offsets are used in glibc, second 2 are utilized in this TU
+	.equ	ORIG_RA_SP_OFF, 0
+	.equ	RET_ADDR_SP_OFF, 8
+	.equ	RELOC_ADDR_SP_OFF, 16
+	.equ	UNUSED_SP_OFF, 24
 	// NOTE: align this to 16, (NR_GPR + NR_FPR) * 8 % 16 == 0
 	.equ	NR_GPR, 32
 	.equ	NR_FPR, 32
-	.equ	CONTEXT_SIZE, (NR_GPR + NR_FPR - 1) * 8
+	.equ	CONTEXT_SIZE, (NR_GPR + NR_FPR) * 8
 
 
 	/* Macros */
 	// store a register in the TLS symbol using tmp_reg to hold the address
 	.macro SDSYMT reg, sym, tmp_reg
-	0:	auipc	\tmp_reg, %tls_ie_pcrel_hi(\sym)
-		ld	\tmp_reg, %pcrel_lo(0b)(\tmp_reg)
+	999999:	auipc	\tmp_reg, %tls_ie_pcrel_hi(\sym)
+		ld	\tmp_reg, %pcrel_lo(999999b)(\tmp_reg)
 		add	\tmp_reg, \tmp_reg, tp
 
-		sd	\reg, 0(\tmp_reg)
+		sd	\reg, (\tmp_reg)
 	.endm
 	// load a register from the TLS symbol
 	.macro LDSYMT reg, sym
-	0:	auipc	\reg, %tls_ie_pcrel_hi(\sym)
-		ld	\reg, %pcrel_lo(0b)(\reg)
+	999999:	auipc	\reg, %tls_ie_pcrel_hi(\sym)
+		ld	\reg, %pcrel_lo(999999b)(\reg)
 		add	\reg, \reg, tp
 
-		ld	\reg, 0(\reg)
-	.endm
-	// store safely (without clobbering) a register to the TLS symbol
-	.macro SDSYMTS reg, sym
-		addi	sp, sp, -16
-		sd	t0, 0(sp)
-
-		SDSYMT	\reg, \sym, t0
-
-		ld	t0, 0(sp)
-		addi	sp, sp, 16
+		ld	\reg, (\reg)
 	.endm
 
-	// replace the value from STORE_CONTEXT if a register should be modified
-	.macro SDSP rs, rd_num
+	// replace the value from STORE_CONTEXT_PROLOGUE with a new value
+	.macro SDSP_G rs, rd_num
 		sd	\rs, (\rd_num - 1) * 8(sp)
 	.endm
 
@@ -108,7 +101,7 @@
 	.endm
 #endif
 
-	.macro STORE_CONTEXT
+	.macro STORE_CONTEXT_PROLOGUE
 		addi	sp, sp, -CONTEXT_SIZE
 
 		/*
@@ -171,7 +164,7 @@
 		STORE_F	31
 #endif
 	.endm
-	.macro LOAD_CONTEXT
+	.macro LOAD_CONTEXT_EPILOGUE
 		LOAD_G	1
 		LOAD_G	5
 		LOAD_G	6
@@ -227,51 +220,67 @@
 	.endm
 
 	/*
-	 * While processing one ecall, another ecall can be executed from
-	 * the user's callback functions. That's why we need to store these
-	 * shared global variables. These clobber registers, use inside
-	 * STORE_CONTEXT and LOAD_CONTEXT.
+	 * Before executing relocated instructions, use MV_STACK_TO_TLS to save
+	 * the return address and original ra from a patch.
+	 * MV_TLS_TO_STACK, just do the opposite after the execution is done.
 	 */
-	.macro STORE_GLOBALS
-		addi	sp, sp, -32
-		LDSYMT	t0, asm_return_address
-		sd	t0, 0(sp)
-		LDSYMT	t0, asm_ra_orig
-		sd	t0, 8(sp)
-		LDSYMT	t0, following_ins_addr
-		sd	t0, 16(sp)
-	.endm
-	.macro LOAD_GLOBALS
-		ld	t0, 0(sp)
-		SDSYMT	t0, asm_return_address, t1
-		ld	t0, 8(sp)
+	.macro MV_STACK_TO_TLS
+		sd	t0, UNUSED_SP_OFF(sp)
+		ld	t0, ORIG_RA_SP_OFF(sp)
+		sd	t1, ORIG_RA_SP_OFF(sp)
+
 		SDSYMT	t0, asm_ra_orig, t1
-		ld	t0, 16(sp)
-		SDSYMT	t0, following_ins_addr, t1
-		addi	sp, sp, 32
+		ld	t0, RET_ADDR_SP_OFF(sp)
+		SDSYMT	t0, asm_return_address, t1
+
+		ld	t0, UNUSED_SP_OFF(sp)
+		ld	t1, ORIG_RA_SP_OFF(sp)
+		addi	sp, sp, GLIBC_SP_OFF
+	.endm
+	.macro MV_TLS_TO_STACK
+		addi	sp, sp, -GLIBC_SP_OFF
+		sd	t0, UNUSED_SP_OFF(sp)
+
+		LDSYMT	t0, asm_ra_orig
+		sd	t0, ORIG_RA_SP_OFF(sp)
+		LDSYMT	t0, asm_return_address
+		sd	t0, RET_ADDR_SP_OFF(sp)
+
+		ld	t0, UNUSED_SP_OFF(sp)
 	.endm
 
 	/*
-	 * For threads that do not share global symbols (TLS) like pthread,
-	 * it is needed to prepare these important variables for the child
-	 * process immediately after creation. These also clobber registers,
-	 * use inside STORE_CONTEXT and LOAD_CONTEXT.
+	 * For threads that do not share global symbols (TLS) like pthread or
+	 * thread (child) with a separate stack, these important addresses for
+	 * the child process have to be ready immediately after creation.
 	 */
-	.macro STORE_SHR
-		LDSYMT	t0, asm_return_address
-		sd	t0, asm_return_address_shr, t1
-		LDSYMT	t0, asm_ra_orig
+	.macro MV_STACK_TO_SHR
+		sd	t0, UNUSED_SP_OFF(sp)
+		ld	t0, ORIG_RA_SP_OFF(sp)
+		sd	t1, ORIG_RA_SP_OFF(sp)
+
 		sd	t0, asm_ra_orig_shr, t1
-		LDSYMT	t0, following_ins_addr
-		sd	t0, following_ins_addr_shr, t1
+		ld	t0, RET_ADDR_SP_OFF(sp)
+		sd	t0, asm_return_address_shr, t1
+		ld	t0, RELOC_ADDR_SP_OFF(sp)
+		sd	t0, reloc_instrs_addr_shr, t1
+
+		ld	t0, UNUSED_SP_OFF(sp)
+		ld	t1, ORIG_RA_SP_OFF(sp)
+		addi	sp, sp, GLIBC_SP_OFF
 	.endm
-	.macro LOAD_SHR
-		ld	t0, asm_return_address_shr
-		SDSYMT	t0, asm_return_address, t1
+	.macro MV_SHR_TO_STACK
+		addi	sp, sp, -GLIBC_SP_OFF
+		sd	t0, UNUSED_SP_OFF(sp)
+
 		ld	t0, asm_ra_orig_shr
-		SDSYMT	t0, asm_ra_orig, t1
-		ld	t0, following_ins_addr_shr
-		SDSYMT	t0, following_ins_addr, t1
+		sd	t0, ORIG_RA_SP_OFF(sp)
+		ld	t0, asm_return_address_shr
+		sd	t0, RET_ADDR_SP_OFF(sp)
+		ld	t0, reloc_instrs_addr_shr
+		sd	t0, RELOC_ADDR_SP_OFF(sp)
+
+		ld	t0, UNUSED_SP_OFF(sp)
 	.endm
 
 
@@ -319,41 +328,58 @@ asm_relocation_space:
 	.align	12, 0
 asm_entry_point:
 	.cfi_startproc
-	/* Trampoline jumps here */
-	ld	ra, 0(sp)
-	addi	sp, sp, TRAMPOLINE_SP_OFF
-
-	/* INTERCEPT_NO_TRAMPOLINE=true, GW jumps here */
 	/*
-	 * ra is the only reg that is certainly clobbered due to patching, and
-	 * it holds the return address of a GW.
-	 * a7 is clobbered only when the patch is TYPE_SML.
+	 * Direct jump location (INTERCEPT_NO_TRAMPOLINE=1)
+	 * When the trampoline is used, it stores the return address of a GW
+	 * in the stack.
+	 * Direct jumps (INTERCEPT_NO_TRAMPOLINE=1) have to store ra here
+	 * before overwriting it by calling detect_cur_patch_wrapper.
 	 */
-	SDSYMTS	ra, asm_ra_temp
+	sd	ra, UNUSED_SP_OFF(sp)
 
+	/* Trampoline jump location, default (INTERCEPT_NO_TRAMPOLINE=0) */
+
+	// geather patch information, and restore somewhat original context
 	call	detect_cur_patch_wrapper
 
-	addi	sp, sp, GLIBC_SP_OFF
 	/*********************************************************************
-	 * The original context before patching is restored, exluding ra,    *
-	 * which will be (ab)used more for jumping back and forth between    *
-	 * here and the patched instructions, and also to call C functions.  *
+	 * The original context before patching is restored, excluding ra    *
+	 * and sp. ra will be (ab)used more for jumping back and forth       *
+	 * between here and the patched instructions, and also to call C     *
+	 * functions. sp will be restored to the original state before       *
+	 * executing relocated instructions because some of those            *
+	 * instructions use sp.                                              *
 	 *********************************************************************/
+
 	/*
-	 * Execute preceding ecall instructions, jump using ra because it is
-	 * unlikely that it will be modified or used there. In case it is,
+	 * Before executing the preceding ecall instructions, sp must have the
+	 * original state. Before deallocating the stack, important addresses
+	 * will be stored in the TLS section to preserve them.
+	 */
+	ld	ra, RELOC_ADDR_SP_OFF(sp)
+	MV_STACK_TO_TLS
+
+	/*
+	 * Execute the preceding ecall instructions, and jump using ra because
+	 * it is unlikely that it will be modified or used there. If it is,
 	 * a block of instructions will be there to aid that (patcher.c).
 	 */
-	LDSYMT	ra, preceding_ins_addr
 	jalr	ra, ra
 
-	// store ra, used for executing the following ecall instructions
-	SDSYMTS	ra, following_ins_addr
+	/*
+	 * After execution of preceding instructions, ra holds the address of
+	 * relocated instructions that follow ecall.
+	 * That address will be stored in RELOC_ADDR_SP_OFF(sp) after the stack
+	 * is allocated and other addresses are stored (MV_TLS_TO_STACK).
+	 */
+	MV_TLS_TO_STACK
+	sd	ra, RELOC_ADDR_SP_OFF(sp)
 
+	// ecall gets executed here, or not, depending on the hooks the user creates
 	call	intercept_routine_wrapper
 
 	/*
-	 * All done, except the following instructions. patcher.c prepared
+	 * All done, except the following ecall instructions. patcher.c prepared
 	 * everything necessary to go back to the patch origin.
 	 * sp and ra are restored, and asm_return_address gets loaded into the
 	 * register which is used for jumping back (patch->return_register).
@@ -361,7 +387,9 @@ asm_entry_point:
 	 * potential modifications) gets stored on the expected offset - 0(sp)
 	 * for GW, 8(sp) for MID.
 	 */
-	LDSYMT	ra, following_ins_addr
+	ld	ra, RELOC_ADDR_SP_OFF(sp)
+	MV_STACK_TO_TLS
+
 	jalr	zero, ra
 	.cfi_endproc
 	.size	asm_entry_point, . - asm_entry_point
@@ -369,7 +397,7 @@ asm_entry_point:
 
 detect_cur_patch_wrapper:
 	.cfi_startproc
-	STORE_CONTEXT
+	STORE_CONTEXT_PROLOGUE
 	// use frame buffer to simplify offsetting
 	addi	s0, sp, CONTEXT_SIZE
 	// place a7 in a callee-saved register to preserve it after the call
@@ -377,11 +405,11 @@ detect_cur_patch_wrapper:
 
 	/* The table shows what the clobbered registers hold for each patch type
 	 *********************************************************************
-	 *      * return address   *  original ra   *   a7 (ecall) value     *
+	 *      *    return address    *  original ra  *   a7 (ecall) value  *
 	 *********************************************************************
-	 * GW   *      ra          *     0(sp)      *    a7 (unchanged)      *
-	 * MID  *      0(sp)       *     8(sp)      *    a7 (unchanged)      *
-	 * SML  *      a7          *     0(sp)      *    patch->syscall_num  *
+	 * GW   * ra/UNUSED_SP_OFF(sp) *     0(sp)     *    a7 (unchanged)   *
+	 * MID  *       0(sp)          *     8(sp)     *    a7 (unchanged)   *
+	 * SML  *        a7            *     0(sp)     *  patch->syscall_num *
 	 *********************************************************************/
 
 	// a0 will hold TYPE_MID ret addr
@@ -389,17 +417,17 @@ detect_cur_patch_wrapper:
 	// a1 will hold TYPE_SML ret addr
 	mv	a1, a7
 	// a2 will hold TYPE_GW ret addr
-	LDSYMT	a2, asm_ra_temp
+	ld	a2, UNUSED_SP_OFF(s0)
 
 	call	detect_cur_patch
 	/*
 	 * Returns:
 	 * a0 = patch type/syscall_num
-	 * a1 = relocation addr/preceding_ins_addr
+	 * a1 = reloc_instrs_addr
 	 */
 
 	// store results (a0 is only relevant to TYPE_SML):
-	SDSYMT	a1, preceding_ins_addr, t0
+	sd	a1, RELOC_ADDR_SP_OFF(s0)
 	// restore original a7 in case it was clobbered
 	mv	a7, s1
 
@@ -410,29 +438,25 @@ detect_cur_patch_wrapper:
 	beq	a0, t0, .Lgw
 
 .Lsml:
-	SDSYMT	a7, asm_return_address, t0
-	ld	t1, 0(s0)
-	SDSYMT	t1, asm_ra_orig, t0
-	// NOTE: detect_cur_patch returned syscall_num, replace old a7 on the stack
-	SDSP	a0, 17
+	sd	a7, RET_ADDR_SP_OFF(s0)
+	// NOTE: detect_cur_patch returned syscall_num, replace old a7 (x17) on the stack
+	SDSP_G	a0, 17
 	j	.Ldone
 
 .Lmid:
-	ld	t1, 0(s0)
-	SDSYMT	t1, asm_return_address, t0
+	ld	t0, 0(s0)
 	ld	t1, 8(s0)
-	SDSYMT	t1, asm_ra_orig, t0
+	sd	t0, RET_ADDR_SP_OFF(s0)
+	sd	t1, ORIG_RA_SP_OFF(s0)
 	j	.Ldone
 
 .Lgw:
-	LDSYMT	t1, asm_ra_temp
-	SDSYMT	t1, asm_return_address, t0
-	ld	t1, 0(s0)
-	SDSYMT	t1, asm_ra_orig, t0
+	ld	t0, UNUSED_SP_OFF(s0)
+	sd	t0, RET_ADDR_SP_OFF(s0)
 	j	.Ldone
 
 .Ldone:
-	LOAD_CONTEXT
+	LOAD_CONTEXT_EPILOGUE
 	ret
 	.cfi_endproc
 	.size	detect_cur_patch_wrapper, . - detect_cur_patch_wrapper
@@ -440,14 +464,13 @@ detect_cur_patch_wrapper:
 
 intercept_routine_wrapper:
 	.cfi_startproc
-	STORE_CONTEXT
+	STORE_CONTEXT_PROLOGUE
+	addi	s0, sp, CONTEXT_SIZE
 
 	// pass return address to intercept_routine to detect patch_desc
-	LDSYMT	a6, asm_return_address
+	ld	a6, RET_ADDR_SP_OFF(s0)
 
-	STORE_GLOBALS
 	call	intercept_routine
-	LOAD_GLOBALS
 	/*
 	 * Returns:
 	 * a0 = result
@@ -464,31 +487,35 @@ intercept_routine_wrapper:
 	wfi	// unexpected return value (wfi in U-mode: illegal instr, exit)
 
 .Lunhandled:	// SYS_rt_sigreturn
-	LOAD_CONTEXT
+	LOAD_CONTEXT_EPILOGUE
 	ecall
 	ret
 
 .Lhandled:
 	// result of ecall processed by C hook or syscall_no_intercept()
-	SDSP	a0, 10
-	LOAD_CONTEXT
+	SDSP_G	a0, 10
+	LOAD_CONTEXT_EPILOGUE
 	ret
 
 .Lclone:
-	// store globals for very independent child (CLONE_SETTLS)
-	STORE_SHR
-	// now restore original context before cloning
-	LOAD_CONTEXT
+	// restore original context before cloning
+	LOAD_CONTEXT_EPILOGUE
+
+	// move stack data in SHR .bss for very independent child (CLONE_SETTLS)
+	MV_STACK_TO_SHR
+
 	ecall
 
+	// move data back from SHR to stack
+	MV_SHR_TO_STACK
+
 	// save again context for each thread before going into C again
-	STORE_CONTEXT
+	STORE_CONTEXT_PROLOGUE
+
 	call	intercept_routine_post_clone
 
-	// put globals that the parent provided (STORE_SHR) in childs memory space
-	LOAD_SHR
-	// restore context before intercept_routine_post_clone
-	LOAD_CONTEXT
+	// restore context after intercept_routine_post_clone
+	LOAD_CONTEXT_EPILOGUE
 	ret
 	.cfi_endproc
 	.size	intercept_routine_wrapper, . - intercept_routine_wrapper
@@ -501,19 +528,16 @@ asm_relocation_space_size:
 	.8byte	asm_entry_point - asm_relocation_space
 
 
-	/*
-	 *.bss is shared space for multithreading,
-	 * only these are relevant after cloning
-	 */
+	/* .bss is shared space for multithreading in case of CLONE_SETTLS */
 	.section .bss
 	.local	asm_return_address_shr
 	.local	asm_ra_orig_shr
-	.local	following_ins_addr_shr
+	.local	reloc_instrs_addr_shr
 asm_return_address_shr:
 	.zero	8
 asm_ra_orig_shr:
 	.zero	8
-following_ins_addr_shr:
+reloc_instrs_addr_shr:
 	.zero	8
 
 
@@ -525,15 +549,12 @@ following_ins_addr_shr:
 	.hidden	asm_ra_orig
 	.global	asm_ra_temp
 	.hidden	asm_ra_temp
-	.local	preceding_ins_addr
-	.local	following_ins_addr
+	.local	reloc_instrs_addr
 asm_return_address:
 	.zero	8
 asm_ra_orig:
 	.zero	8
 asm_ra_temp:
 	.zero	8
-preceding_ins_addr:
-	.zero	8
-following_ins_addr:
+reloc_instrs_addr:
 	.zero	8

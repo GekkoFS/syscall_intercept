@@ -1,5 +1,6 @@
 /*
- * Copyright 2016-2020, Intel Corporation
+ * Copyright 2016-2024, Intel Corporation
+ * Contributor: Petar Andrić
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -34,6 +35,7 @@
  * patcher.c -- patching a library
  *
  * Jumping from the subject library:
+ * TODO: the RISC-V version differs greatly, create a new table
  *
  *     /--------------------------\
  *     |               subject.so |
@@ -288,7 +290,7 @@ find_GW(struct intercept_desc *desc, struct patch_desc *patch)
 		}
 	}
 
-	// offsetting TYPE_MID to skip `addi sp, sp, -16`
+	// offsetting TYPE_MID to skip `addi sp, sp, -32`
 	if (patch->syscall_num == TYPE_MID)
 		patch->dst_jmp_patch += MODIFY_SP_INS_SIZE;
 }
@@ -473,7 +475,7 @@ finalize_and_jump_back(uint8_t **dst, struct patch_desc *patch)
 		ra_offset = 0;
 		/* fallthrough */
 	case TYPE_MID:
-		instrs_size += rvpc_addisp(instrs_buff + instrs_size, -16);
+		instrs_size += rvpc_addisp(instrs_buff + instrs_size, -32);
 		instrs_size += rvpc_sd(instrs_buff + instrs_size,
 					REG_RA, REG_SP, ra_offset);
 		break;
@@ -617,13 +619,12 @@ copy_trampoline(uint8_t *trampoline_address)
 {
 	/* This function (destination) is part of intercept_irq_entry.S */
 	extern void asm_entry_point(void);
-	uintptr_t destination = (uintptr_t)asm_entry_point;
+	uintptr_t destination = (uintptr_t)asm_entry_point + TRAMPOLINE_JUMP_OFFSET;
 
-	uint8_t instrs_buff[MAX_PC_INS_SIZE * 2 + MAX_P_INS_SIZE];
+	uint8_t instrs_buff[MAX_PC_INS_SIZE + MAX_P_INS_SIZE];
 	uint8_t instrs_size = 0;
 
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -16);
-	instrs_size += rvpc_sd(instrs_buff + instrs_size, REG_RA, REG_SP, 0);
+	instrs_size += rvpc_sd(instrs_buff + instrs_size, REG_RA, REG_SP, 24);
 
 	instrs_size += rvp_jump_abs(instrs_buff + instrs_size, REG_ZERO,
 					REG_RA, destination);
@@ -650,7 +651,7 @@ copy_GW(struct intercept_desc *desc, const struct patch_desc *patch)
 	if (desc->uses_trampoline)
 		destination = (uintptr_t)desc->trampoline_address;
 	else
-		destination = (uintptr_t)asm_entry_point + DIRECT_JUMP_OFFSET;
+		destination = (uintptr_t)asm_entry_point;
 
 #ifdef __riscv_c
 	if (patch->start_with_c_nop) {
@@ -659,14 +660,14 @@ copy_GW(struct intercept_desc *desc, const struct patch_desc *patch)
 	}
 #endif
 
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -16);
+	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -32);
 	instrs_size += rvpc_sd(instrs_buff + instrs_size, ret_reg, REG_SP, 0);
 
 	instrs_size += rvp_jump_2GB(instrs_buff + instrs_size, ret_reg, ret_reg,
 					jalr_addr, destination);
 
 	instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 0);
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 16);
+	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 32);
 
 #ifdef __riscv_c
 	if (patch->end_with_c_nop)
@@ -698,14 +699,14 @@ copy_MID(const struct patch_desc *patch)
 	}
 #endif
 
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -16);
+	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -32);
 	instrs_size += rvpc_sd(instrs_buff + instrs_size, ret_reg, REG_SP, 8);
 
 	instrs_size += rvp_jal(instrs_buff + instrs_size, ret_reg,
 				jal_addr, GW_entry_addr);
 
 	instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 8);
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 16);
+	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 32);
 
 #ifdef __riscv_c
 	if (patch->end_with_c_nop)
