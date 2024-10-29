@@ -89,7 +89,7 @@ by code outside libc are not intercepted. In order to
 be able to issue syscalls that are not intercepted, a
 convenience function is provided by the library:
 ```c
-long syscall_no_intercept(long syscall_number, ...);
+struct wrapper_ret syscall_no_intercept(long syscall_number, ...);
 ```
 
 In addition to hooking syscalls before they would be called, the API
@@ -109,7 +109,9 @@ int syscall_error_code(long result);
 When passed a return value from syscall_no_intercept, this function
 can translate it to an error code equivalent to a libc error code:
 ```c
-int fd = (int)syscall_no_intercept(SYS_open, "file", O_RDWR);
+struct wrapper_ret ret;
+ret = syscall_no_intercept(SYS_open, "file", O_RDWR);
+int fd = (int)ret.a0;
 if (syscall_error_code(fd) != 0)
 	fprintf(stderr, strerror(syscall_error_code(fd)));
 ```
@@ -124,7 +126,7 @@ E.g.: initializing the library in a process with pid 123 when the
 INTERCEPT_LOG is set to "intercept.log-" will result in a log file named
 intercept.log-123.
 
-*INTERCEPT_LOG_TRUNC -- when set to 0, the log file from INTERCEPT_LOG
+*INTERCEPT_LOG_TRUNC* -- when set to 0, the log file from INTERCEPT_LOG
 is not truncated.
 
 *INTERCEPT_HOOK_CMDLINE_FILTER* -- when set, the library
@@ -134,6 +136,15 @@ last component of the first zero terminated string in
 /proc/self/cmdline matches the string provided
 in the environment variable. This can also be queried
 by the user of the library:
+
+*INTERCEPT_NO_TRAMPOLINE* -- when set, trampoline is not used to jump from
+the patched library to the syscall_intercept library.
+
+*INTERCEPT_DEBUG_DUMP* -- when set, the output is verbose.
+
+*INTERCEPT_ALL_OBJS* -- when set, every library is patched and not just glibc
+and pthread. The syscall_intercept library and Capstone are excluded.
+
 ```c
 int syscall_hook_in_process_allowed(void);
 ```
