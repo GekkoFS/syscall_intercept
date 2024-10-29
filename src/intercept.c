@@ -643,7 +643,7 @@ ret_to_irq_entry:
 	return (struct wrapper_ret){.a0 = syscall_num, .a1 = reloc_addr};
 }
 
-struct patch_desc *
+static struct patch_desc *
 get_cur_patch(int64_t return_address)
 {
 	struct patch_desc *patch = NULL;
@@ -658,6 +658,26 @@ get_cur_patch(int64_t return_address)
 
 	return patch;
 }
+
+void
+intercept_post_clone_log_syscall(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
+			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
+{
+	struct patch_desc *patch = get_cur_patch(a6);
+
+	struct syscall_desc desc = {
+		.nr = (int)a7, /* ignore higher 32 bits */
+		.args[0] = a0,
+		.args[1] = a1,
+		.args[2] = a2,
+		.args[3] = a3,
+		.args[4] = a4,
+		.args[5] = a5
+	};
+
+	intercept_log_syscall(patch, &desc, KNOWN, a0);
+}
+
 
 /*
  * intercept_routine_post_clone

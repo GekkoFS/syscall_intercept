@@ -309,6 +309,11 @@
 	.hidden	intercept_routine
 	.type	intercept_routine, @function
 
+	/* The C function in intercept.c */
+	.global	intercept_post_clone_log_syscall
+	.hidden	intercept_post_clone_log_syscall
+	.type	intercept_post_clone_log_syscall, @function
+
 	/* The C function called right after cloning a thread */
 	.global	intercept_routine_post_clone
 	.hidden	intercept_routine_post_clone
@@ -517,7 +522,12 @@ intercept_routine_wrapper:
 
 	// save again context for each thread before going into C again
 	STORE_CONTEXT_PROLOGUE
+	// save a0 for intercept_routine_post_clone
+	mv	s0, a0
 
+	call	intercept_post_clone_log_syscall
+
+	mv	a0, s0
 	call	intercept_routine_post_clone
 
 	// restore context after intercept_routine_post_clone
