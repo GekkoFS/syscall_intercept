@@ -46,6 +46,13 @@
 #include "disasm_wrapper.h"
 
 /*
+ * For simplicity, declare syscall_no_intercept() with return value 'long'
+ * because nothing in this TU needs the a1 register, only a0 is checked.
+ */
+extern long
+syscall_no_intercept(long syscall_number, ...);
+
+/*
  * open_orig_file
  *
  * Instead of looking for the needed metadata in already mmap library,
@@ -608,6 +615,8 @@ allocate_trampoline(struct intercept_desc *desc)
 
 	if (desc->trampoline_address == MAP_FAILED)
 		xabort("unable to allocate space for trampoline");
+
+	__builtin___clear_cache(guess, guess + TRAMPOLINE_SIZE);
 }
 
 /*

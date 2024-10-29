@@ -462,6 +462,8 @@ detect_cur_patch_wrapper:
 	.size	detect_cur_patch_wrapper, . - detect_cur_patch_wrapper
 
 
+	// check intercept.c for this macro description
+	.equ	UNH_SYSCALL, -0x1000
 intercept_routine_wrapper:
 	.cfi_startproc
 	STORE_CONTEXT_PROLOGUE
@@ -472,32 +474,36 @@ intercept_routine_wrapper:
 
 	call	intercept_routine
 	/*
-	 * Returns:
-	 * a0 = result
-	 * a1 = action number
+	 * Returns one of these two options:
+	 * 1. when ecall was executed, a0/a1 hold the results of ecall
+	 * 2. unhandled syscalls, a0 = -0x1000; a1 = unhandled type num
 	 */
 
-	li	t0, 0
-	beq	a1, t0, .Lunhandled
-	li	t0, 1
-	beq	a1, t0, .Lhandled
-	li	t0, 2
-	beq	a1, t0, .Lclone
+	li	t0, UNH_SYSCALL
+	bne	a0, t0, .Lhandled
 
-	wfi	// unexpected return value (wfi in U-mode: illegal instr, exit)
+	addi	t0, t0, -1
+	beq	a1, t0, .Lunh_generic
+	addi	t0, t0, -1
+	beq	a1, t0, .Lunh_clone
 
-.Lunhandled:	// SYS_rt_sigreturn
+	// unmatched values of a0/a1 imply that ecall was executed, fail-safe
+	j	.Lhandled
+
+
+.Lhandled:
+	// store results of ecall by replacing old a0/a1 on the stack
+	SDSP_G	a0, 10
+	SDSP_G	a1, 11
+	LOAD_CONTEXT_EPILOGUE
+	ret
+
+.Lunh_generic:	// SYS_rt_sigreturn
 	LOAD_CONTEXT_EPILOGUE
 	ecall
 	ret
 
-.Lhandled:
-	// result of ecall processed by C hook or syscall_no_intercept()
-	SDSP_G	a0, 10
-	LOAD_CONTEXT_EPILOGUE
-	ret
-
-.Lclone:
+.Lunh_clone:	// clones with separate stack space and vfork()
 	// restore original context before cloning
 	LOAD_CONTEXT_EPILOGUE
 

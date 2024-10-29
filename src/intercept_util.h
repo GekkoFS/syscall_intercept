@@ -37,16 +37,6 @@
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
-/*
- * syscall_no_intercept - syscall without interception
- *
- * Call syscall_no_intercept to make syscalls
- * from the interceptor library, once glibc is already patched.
- * Don't use the syscall function from glibc, that
- * would just result in an infinite recursion.
- */
-long syscall_no_intercept(long syscall_number, ...);
-
 void mprotect_no_intercept(void *addr, size_t len, int prot,
 			const char *msg_on_error);
 /*

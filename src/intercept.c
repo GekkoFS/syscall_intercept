@@ -1,5 +1,6 @@
 /*
- * Copyright 2016-2017, Intel Corporation
+ * Copyright 2016-2024, Intel Corporation
+ * Contributor: Petar Andrić
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -60,6 +61,30 @@
 #include "disasm_wrapper.h"
 #include "magic_syscalls.h"
 
+/*
+ * Unhandled syscalls: syscalls that are not handled in this TU, but
+ * intercept_irq_entry handles them.
+ * To preserve both syscall return values (a0/a1), these macros are placed in
+ * an a0/a1 register (struct wrapper_ret) to signify unhandled syscall and the
+ * type to intercept_irq_entry.
+ * - UNH_SYSCALL goes in a0 for both generic and clone type.
+ * - UNH_GENERIC can be any syscall that this library cannot or should not
+ *   intercept. Currently, only SYS_rt_sigreturn.
+ * - UNH_CLONE all clones that have allocated stack space for a child process.
+ *
+ * Values are chosen based on the syscall's error code convention and the
+ * unlikeliness of colliding with actual syscall return values.
+ * E.g., the way glibc checks for errors after ecall indicates acceptable minimum:
+ * (...)
+ * ecall
+ * c.lui   a5,0xfffff       <--- a5 = -0x1000
+ * bltu    a5,a0,ba786      <--- check if a0 in between 0 and -0x1000
+ * (...)
+ */
+#define UNH_SYSCALL	((int64_t)-0x1000)
+#define UNH_GENERIC	((int64_t)-0x1001)
+#define UNH_CLONE	((int64_t)-0x1002)
+
 int (*intercept_hook_point)(long syscall_number,
 			long arg0, long arg1,
 			long arg2, long arg3,
@@ -101,10 +126,6 @@ debug_dump(const char *fmt, ...)
 
 static void log_header(void);
 
-struct wrapper_ret {
-	int64_t a0;
-	int64_t a1;
-};
 
 /* Should all objects be patched, or only libc and libpthread? */
 static bool patch_all_objs;
@@ -431,6 +452,8 @@ write_enable_asm_relocation_space(bool enable_write)
 	} else {
 		prot = PROT_READ | PROT_EXEC;
 		err_msg = "asm_relocation_space write disable";
+		__builtin___clear_cache(asm_relocation_space,
+					asm_relocation_space + asm_relocation_space_size);
 	}
 
 	mprotect_no_intercept(asm_relocation_space, asm_relocation_space_size,
@@ -688,7 +711,7 @@ struct wrapper_ret
 intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
 {
-	long result;
+	struct wrapper_ret result = {.a0 = a0, .a1 = a1};
 	int forward_to_kernel = true;
 	struct patch_desc *patch = get_cur_patch(a6);
 	/*
@@ -706,8 +729,8 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		.args[5] = a5
 	};
 
-	if (handle_magic_syscalls(&desc, &result) == 0)
-		return (struct wrapper_ret){.a0 = result, .a1 = 1};
+	if (handle_magic_syscalls(&desc, &result.a0) == 0)
+		return result;
 
 	intercept_log_syscall(patch, &desc, UNKNOWN, 0);
 
@@ -719,11 +742,11 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 					desc.args[3],
 					desc.args[4],
 					desc.args[5],
-					&result);
+					&result.a0);
 
 	if (desc.nr == SYS_rt_sigreturn) {
 		/* can't handle these syscalls the normal way */
-		return (struct wrapper_ret){.a0 = -1, .a1 = 0};
+		return (struct wrapper_ret){.a0 = UNH_SYSCALL, .a1 = UNH_GENERIC};
 	}
 
 	if (forward_to_kernel) {
@@ -739,14 +762,16 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		 * the clone_child_intercept_routine instead, executing
 		 * it on the new child threads stack, then returns to libc.
 		 */
-			return (struct wrapper_ret){.a0 = -1, .a1 = 2};
 		if (desc.nr == SYS_clone && (desc.args[1] != 0 ||
 				desc.args[0] & CLONE_VFORK)) {
+			return (struct wrapper_ret){.a0 = UNH_SYSCALL,
+							.a1 = UNH_CLONE};
 		}
 #ifdef SYS_clone3
 		else if (desc.nr == SYS_clone3 &&
-			((struct clone_args *)desc.args[0])->stack != 0) {
-			return (struct wrapper_ret){.a0 = -1, .a1 = 2};
+				((struct clone_args *)desc.args[0])->stack != 0) {
+			return (struct wrapper_ret){.a0 = UNH_SYSCALL,
+							.a1 = UNH_CLONE};
 		}
 #endif
 		else {
@@ -767,14 +792,14 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		 * after the clone syscall (syscall_no_intercept).
 		 */
 		if (desc.nr == SYS_clone)
-			intercept_routine_post_clone(result);
+			intercept_routine_post_clone(result.a0);
 #ifdef SYS_clone3
 		else if (desc.nr == SYS_clone3)
-			intercept_routine_post_clone(result);
+			intercept_routine_post_clone(result.a0);
 #endif
 	}
 
-	intercept_log_syscall(patch, &desc, KNOWN, result);
+	intercept_log_syscall(patch, &desc, KNOWN, result.a0);
 
-	return (struct wrapper_ret){.a0 = result, .a1 = 1};
+	return result;
 }

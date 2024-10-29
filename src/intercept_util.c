@@ -54,7 +54,9 @@ void
 mprotect_no_intercept(void *addr, size_t len, int prot,
 			const char *msg_on_error)
 {
-	long result = syscall_no_intercept(SYS_mprotect, addr, len, prot);
+	struct wrapper_ret ret;
+	ret = syscall_no_intercept(SYS_mprotect, addr, len, prot);
+	long result = ret.a0;
 
 	xabort_on_syserror(result, msg_on_error);
 }
@@ -62,10 +64,13 @@ mprotect_no_intercept(void *addr, size_t len, int prot,
 void *
 xmmap_anon(size_t size)
 {
-	long addr = syscall_no_intercept(SYS_mmap,
-				NULL, size,
-				PROT_READ | PROT_WRITE,
-				MAP_PRIVATE | MAP_ANON, -1, (off_t)0);
+	struct wrapper_ret ret;
+
+	ret = syscall_no_intercept(SYS_mmap,
+					NULL, size,
+					PROT_READ | PROT_WRITE,
+					MAP_PRIVATE | MAP_ANON, -1, (off_t)0);
+	long addr = ret.a0;
 
 	xabort_on_syserror(addr, __func__);
 
@@ -75,8 +80,11 @@ xmmap_anon(size_t size)
 void *
 xmremap(void *addr, size_t old, size_t new)
 {
-	long new_addr = syscall_no_intercept(SYS_mremap, addr,
-				old, new, MREMAP_MAYMOVE);
+	struct wrapper_ret ret;
+
+	ret = syscall_no_intercept(SYS_mremap, addr,
+					old, new, MREMAP_MAYMOVE);
+	long new_addr = ret.a0;
 
 	xabort_on_syserror(new_addr, __func__);
 
@@ -86,7 +94,10 @@ xmremap(void *addr, size_t old, size_t new)
 void
 xmunmap(void *addr, size_t len)
 {
-	long result = syscall_no_intercept(SYS_munmap, addr, len);
+	struct wrapper_ret ret;
+
+	ret = syscall_no_intercept(SYS_munmap, addr, len);
+	long result = ret.a0;
 
 	xabort_on_syserror(result, __func__);
 }
@@ -94,7 +105,10 @@ xmunmap(void *addr, size_t len)
 long
 xlseek(long fd, unsigned long off, int whence)
 {
-	long result = syscall_no_intercept(SYS_lseek, fd, off, whence);
+	struct wrapper_ret ret;
+
+	ret = syscall_no_intercept(SYS_lseek, fd, off, whence);
+	long result = ret.a0;
 
 	xabort_on_syserror(result, __func__);
 
@@ -104,7 +118,10 @@ xlseek(long fd, unsigned long off, int whence)
 void
 xread(long fd, void *buffer, size_t size)
 {
-	long result = syscall_no_intercept(SYS_read, fd, buffer, size);
+	struct wrapper_ret ret;
+
+	ret = syscall_no_intercept(SYS_read, fd, buffer, size);
+	long result = ret.a0;
 
 	if (result != (long)size)
 		xabort_errno(syscall_error_code(result), __func__);

@@ -95,11 +95,13 @@ example_fork_hook(long syscall_number,
 		long arg2, long arg3,
 		long arg4, long arg5)
 {
+	struct wrapper_ret ret;
 	long result;
 
 	/* pass it on to the kernel */
-	result = syscall_no_intercept(syscall_number,
-	    arg0, arg1, arg2, arg3, arg4, arg5);
+	ret = syscall_no_intercept(syscall_number,
+					arg0, arg1, arg2, arg3, arg4, arg5);
+	result = ret.a0;
 
 	if (fork_counter > 4 && result > 0) {
 		/*

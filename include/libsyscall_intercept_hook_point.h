@@ -33,6 +33,8 @@
 #ifndef LIBSYSCALL_INTERCEPT_HOOK_POINT_H
 #define LIBSYSCALL_INTERCEPT_HOOK_POINT_H
 
+#include <stdint.h>
+
 /*
  * The inteface for using the intercepting library.
  * This callback function should be implemented by
@@ -51,6 +53,11 @@
 extern "C" {
 #endif
 
+struct wrapper_ret {
+	int64_t a0;
+	int64_t a1;
+};
+
 extern int (*intercept_hook_point)(long syscall_number,
 			long arg0, long arg1,
 			long arg2, long arg3,
@@ -67,8 +74,11 @@ extern void (*intercept_hook_point_clone_parent)(long pid);
  * from the interceptor library, once glibc is already patched.
  * Don't use the syscall function from glibc, that
  * would just result in an infinite recursion.
+ * RISC-V: returns the wrapper_ret struct because the a1 register can also
+ *         be modified by syscall, syscall convention: ret values: a0/a1.
  */
-long syscall_no_intercept(long syscall_number, ...);
+struct wrapper_ret
+syscall_no_intercept(long syscall_number, ...);
 
 /*
  * syscall_error_code - examines a return value from

@@ -48,6 +48,13 @@
 #include <unistd.h>
 
 /*
+ * For simplicity, declare syscall_no_intercept() with return value 'long'
+ * because nothing in this TU needs the a1 register, only a0 is checked.
+ */
+extern long
+syscall_no_intercept(long syscall_number, ...);
+
+/*
  * print_cstr - similar to strcpy, but returns a pointer to the terminating
  * null character in the destination string, instead of a count. This is done
  * without calling into libc, which is part of an effort to eliminate as many
