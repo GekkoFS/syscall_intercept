@@ -41,12 +41,12 @@
 	 * sp is reduced by this offset in glibc due to patching. Before executing
 	 * relocated instrs, sp is increased by this const to restore orig value.
 	 */
-	.equ	GLIBC_SP_OFF, 32
-	// first 2 offsets are used in glibc, second 2 are utilized in this TU
+	.equ	GLIBC_SP_OFF, 48
 	.equ	ORIG_RA_SP_OFF, 0
-	.equ	RET_ADDR_SP_OFF, 8
-	.equ	RELOC_ADDR_SP_OFF, 16
-	.equ	UNUSED_SP_OFF, 24
+	.equ	RET_ADDR_SP_OFF, 16
+	.equ	RELOC_ADDR_SP_OFF, 24
+	.equ	UNUSED_SP_OFF1, 32
+	.equ	UNUSED_SP_OFF2, 40
 	// NOTE: align this to 16, (NR_GPR + NR_FPR) * 8 % 16 == 0
 	.equ	NR_GPR, 32
 	.equ	NR_FPR, 32
@@ -54,20 +54,20 @@
 
 
 	/* Macros */
-	// store a register in the TLS symbol using tmp_reg to hold the address
+	// load TLS symbol address into \reg
+	.macro LASYMT reg, sym
+	999999:	auipc	\reg, %tls_ie_pcrel_hi(\sym)
+		ld	\reg, %pcrel_lo(999999b)(\reg)	// get the offset from GOT
+		add	\reg, \reg, tp			// add the offset to tp
+	.endm
+	// store a register in the TLS symbol using \tmp_reg to hold the address
 	.macro SDSYMT reg, sym, tmp_reg
-	999999:	auipc	\tmp_reg, %tls_ie_pcrel_hi(\sym)
-		ld	\tmp_reg, %pcrel_lo(999999b)(\tmp_reg)
-		add	\tmp_reg, \tmp_reg, tp
-
+		LASYMT	\tmp_reg, \sym
 		sd	\reg, (\tmp_reg)
 	.endm
 	// load a register from the TLS symbol
 	.macro LDSYMT reg, sym
-	999999:	auipc	\reg, %tls_ie_pcrel_hi(\sym)
-		ld	\reg, %pcrel_lo(999999b)(\reg)
-		add	\reg, \reg, tp
-
+		LASYMT	\reg, \sym
 		ld	\reg, (\reg)
 	.endm
 
@@ -225,28 +225,28 @@
 	 * MV_TLS_TO_STACK, just do the opposite after the execution is done.
 	 */
 	.macro MV_STACK_TO_TLS
-		sd	t0, UNUSED_SP_OFF(sp)
-		ld	t0, ORIG_RA_SP_OFF(sp)
-		sd	t1, ORIG_RA_SP_OFF(sp)
+		sd	t0, UNUSED_SP_OFF1(sp)
+		sd	t1, UNUSED_SP_OFF2(sp)
 
+		ld	t0, ORIG_RA_SP_OFF(sp)
 		SDSYMT	t0, asm_ra_orig, t1
 		ld	t0, RET_ADDR_SP_OFF(sp)
-		SDSYMT	t0, asm_return_address, t1
+		SDSYMT	t0, return_address, t1
 
-		ld	t0, UNUSED_SP_OFF(sp)
-		ld	t1, ORIG_RA_SP_OFF(sp)
+		ld	t0, UNUSED_SP_OFF1(sp)
+		ld	t1, UNUSED_SP_OFF2(sp)
 		addi	sp, sp, GLIBC_SP_OFF
 	.endm
 	.macro MV_TLS_TO_STACK
 		addi	sp, sp, -GLIBC_SP_OFF
-		sd	t0, UNUSED_SP_OFF(sp)
+		sd	t0, UNUSED_SP_OFF1(sp)
 
 		LDSYMT	t0, asm_ra_orig
 		sd	t0, ORIG_RA_SP_OFF(sp)
-		LDSYMT	t0, asm_return_address
+		LDSYMT	t0, return_address
 		sd	t0, RET_ADDR_SP_OFF(sp)
 
-		ld	t0, UNUSED_SP_OFF(sp)
+		ld	t0, UNUSED_SP_OFF1(sp)
 	.endm
 
 	/*
@@ -255,32 +255,32 @@
 	 * the child process have to be ready immediately after creation.
 	 */
 	.macro MV_STACK_TO_SHR
-		sd	t0, UNUSED_SP_OFF(sp)
-		ld	t0, ORIG_RA_SP_OFF(sp)
-		sd	t1, ORIG_RA_SP_OFF(sp)
+		sd	t0, UNUSED_SP_OFF1(sp)
+		sd	t1, UNUSED_SP_OFF2(sp)
 
+		ld	t0, ORIG_RA_SP_OFF(sp)
 		sd	t0, asm_ra_orig_shr, t1
 		ld	t0, RET_ADDR_SP_OFF(sp)
-		sd	t0, asm_return_address_shr, t1
+		sd	t0, return_address_shr, t1
 		ld	t0, RELOC_ADDR_SP_OFF(sp)
 		sd	t0, reloc_instrs_addr_shr, t1
 
-		ld	t0, UNUSED_SP_OFF(sp)
-		ld	t1, ORIG_RA_SP_OFF(sp)
+		ld	t0, UNUSED_SP_OFF1(sp)
+		ld	t1, UNUSED_SP_OFF2(sp)
 		addi	sp, sp, GLIBC_SP_OFF
 	.endm
 	.macro MV_SHR_TO_STACK
 		addi	sp, sp, -GLIBC_SP_OFF
-		sd	t0, UNUSED_SP_OFF(sp)
+		sd	t0, UNUSED_SP_OFF1(sp)
 
 		ld	t0, asm_ra_orig_shr
 		sd	t0, ORIG_RA_SP_OFF(sp)
-		ld	t0, asm_return_address_shr
+		ld	t0, return_address_shr
 		sd	t0, RET_ADDR_SP_OFF(sp)
 		ld	t0, reloc_instrs_addr_shr
 		sd	t0, RELOC_ADDR_SP_OFF(sp)
 
-		ld	t0, UNUSED_SP_OFF(sp)
+		ld	t0, UNUSED_SP_OFF1(sp)
 	.endm
 
 
@@ -292,6 +292,16 @@
 	.global	asm_entry_point
 	.hidden	asm_entry_point
 	.type	asm_entry_point, @function
+
+	/* The function that executes preceding/following patched instructions */
+	.local	exec_relocated_instructions
+	.type	exec_relocated_instructions, @function
+
+	/* Spinlock functions */
+	.local	spinlock_aq
+	.type	spinlock_aq, @function
+	.local	spinlock_rl
+	.type	spinlock_rl, @function
 
 	/* Wrapper functions that safely execute C functions */
 	.local	detect_cur_patch_wrapper
@@ -321,7 +331,6 @@
 
 
 	.section .text.relocation, "ax"
-
 	.align	12, 0
 asm_relocation_space:
 	.space	RELOCATION_SIZE, 0
@@ -329,75 +338,187 @@ asm_relocation_space:
 
 
 	.section .text.irqentry, "ax"
-
 	.align	12, 0
 asm_entry_point:
 	.cfi_startproc
-	/*
-	 * Direct jump location (INTERCEPT_NO_TRAMPOLINE=1)
-	 * When the trampoline is used, it stores the return address of a GW
-	 * in the stack.
-	 * Direct jumps (INTERCEPT_NO_TRAMPOLINE=1) have to store ra here
-	 * before overwriting it by calling detect_cur_patch_wrapper.
-	 */
-	sd	ra, UNUSED_SP_OFF(sp)
+	/*********************************************************************
+	 * This is the entry point for direct jumps when the trampoline is   *
+	 * not used (INTERCEPT_NO_TRAMPOLINE=1). ra (the return address of   *
+	 * a GW) must be stored on the stack before detect_cur_patch_wrapper *
+	 * overwrites it. If the trampoline had been used, it would have     *
+	 * already stored ra on the stack at offset UNUSED_SP_OFF1.          *
+	 *********************************************************************/
+	sd	ra, UNUSED_SP_OFF1(sp)
+	/* This is the entry point for a trampoline jump (library default) */
 
-	/* Trampoline jump location, default (INTERCEPT_NO_TRAMPOLINE=0) */
-
-	// geather patch information, and restore somewhat original context
+	// gather patch information and mostly restore the original context
 	call	detect_cur_patch_wrapper
 
 	/*********************************************************************
-	 * The original context before patching is restored, excluding ra    *
-	 * and sp. ra will be (ab)used more for jumping back and forth       *
-	 * between here and the patched instructions, and also to call C     *
-	 * functions. sp will be restored to the original state before       *
-	 * executing relocated instructions because some of those            *
-	 * instructions use sp.                                              *
+	 * Excluding ra and sp, the original context from glibc is restored  *
+	 * by detect_cur_patch_wrapper:                                      *
+	 * - ra will be (ab)used more for jumping back and forth between     *
+	 *   here and the patched instructions, and to call the C functions. *
+	 * - stack (sp) holds important adresses: the overwriten ra from     *
+	 *   glibc, the address to jump back to glibc, and the address of    *
+	 *   relocated instructions (the one that precedes ecall).           *
 	 *********************************************************************/
 
+	// execute the instructions that precede the ecall in glibc
+	call	exec_relocated_instructions
+
+	// ecall is executed here or not, depending on the hooks created by the user
+	call	intercept_routine_wrapper
+
+	// execute the instructions that follow the ecall in glibc
+	call	exec_relocated_instructions
+
+	/*********************************************************************
+	 * Finished! The final part of the relocation space prepares the     *
+	 * patch to return to glibc. The patcher.c prepared relocation       *
+	 * instructions at runtime; for this final part, see                 *
+	 * finalize_and_jump_back(). Bye-bye, patch! Good luck out there!    *
+	 *********************************************************************/
+	ld	ra, RELOC_ADDR_SP_OFF(sp)
+	jalr	zero, ra
+	.cfi_endproc
+	.size	asm_entry_point, . - asm_entry_point
+
+
+/*
+ * This messy function lacks a proper prologue and epilogue because sp must retain
+ * its original value from glibc before the relocated instructions can be executed.
+ */
+exec_relocated_instructions:
+	.cfi_startproc
+	// save ra and a0 on the stack before the spinlock, "prologue"
+	sd	ra, UNUSED_SP_OFF1(sp)
+	sd	a0, UNUSED_SP_OFF2(sp)
+
 	/*
-	 * Before executing the preceding ecall instructions, sp must have the
-	 * original state. Before deallocating the stack, important addresses
-	 * will be stored in the TLS section to preserve them.
+	 * TLS is used here to save data while executing patched instructions;
+	 * lock it to avoid race conditions or data corruption.
+	 */
+	LASYMT	a0, lock_TLS
+	call	spinlock_aq
+
+	// now ra can be stored in reloc_ra_temp before the stack gets deallocated
+	ld	ra, UNUSED_SP_OFF1(sp)
+	SDSYMT	ra, reloc_ra_temp, a0
+
+	// used as an argument with the spinlock, restore to the original value
+	ld	a0, UNUSED_SP_OFF2(sp)
+
+	/*
+	 * Before executing the relocated instructions, sp must be in its original
+	 * state. Before deallocating the stack, important addresses will be
+	 * stored in the TLS section to preserve them (MV_STACK_TO_TLS).
 	 */
 	ld	ra, RELOC_ADDR_SP_OFF(sp)
 	MV_STACK_TO_TLS
 
 	/*
-	 * Execute the preceding ecall instructions, and jump using ra because
-	 * it is unlikely that it will be modified or used there. If it is,
-	 * a block of instructions will be there to aid that (patcher.c).
+	 * Jump to the relocated instructions using ra because it is unlikely that
+	 * it will be modified or used there. If it is, a block of instructions
+	 * will be there to aid that (load_orig_ra_temp()/store_new_ra_temp()).
 	 */
 	jalr	ra, ra
 
 	/*
-	 * After execution of preceding instructions, ra holds the address of
-	 * relocated instructions that follow ecall.
-	 * That address will be stored in RELOC_ADDR_SP_OFF(sp) after the stack
-	 * is allocated and other addresses are stored (MV_TLS_TO_STACK).
+	 * After executing the relocated instructions, ra holds the address of
+	 * the next block of relocated instructions. That address will be stored
+	 * on the stack at offset RELOC_ADDR_SP_OFF.
 	 */
 	MV_TLS_TO_STACK
 	sd	ra, RELOC_ADDR_SP_OFF(sp)
 
-	// ecall gets executed here, or not, depending on the hooks the user creates
-	call	intercept_routine_wrapper
+	// load ra from the start of this function
+	LDSYMT	ra, reloc_ra_temp
 
-	/*
-	 * All done, except the following ecall instructions. patcher.c prepared
-	 * everything necessary to go back to the patch origin.
-	 * sp and ra are restored, and asm_return_address gets loaded into the
-	 * register which is used for jumping back (patch->return_register).
-	 * For dynamic types (GW/MID) sp gets reduced and the original ra (with
-	 * potential modifications) gets stored on the expected offset - 0(sp)
-	 * for GW, 8(sp) for MID.
-	 */
-	ld	ra, RELOC_ADDR_SP_OFF(sp)
-	MV_STACK_TO_TLS
+	// store ra and a0 on the stack before calling spinlock_rl
+	sd	ra, UNUSED_SP_OFF1(sp)
+	sd	a0, UNUSED_SP_OFF2(sp)
 
-	jalr	zero, ra
+	/* All data is back on the stack, release lock */
+	LASYMT	a0, lock_TLS
+	call	spinlock_rl
+
+	// "epilogue"
+	ld	ra, UNUSED_SP_OFF1(sp)
+	ld	a0, UNUSED_SP_OFF2(sp)
+	ret
 	.cfi_endproc
-	.size	asm_entry_point, . - asm_entry_point
+	.size	exec_relocated_instructions, . - exec_relocated_instructions
+
+
+/*
+ * Function: spinlock_aq(int *a0)
+ * The parameter a0 holds the address of the lock to be utilized.
+ * Typically, amoswap is used for spinlocks; however, amomax is used instead to
+ * reduce pressure on the memory bus. While amoswap always performs a load/store
+ * cycle, amomax will only perform a store if necessary (when the lock is open,
+ * i.e., 0). At least, in theory...
+ */
+spinlock_aq:
+	.cfi_startproc
+	addi	sp, sp, -16
+	sd	t0, 0(sp)
+	sd	t1, 8(sp)
+
+	li	t1, 1
+.Lwait:
+#ifdef __riscv_a
+	/*
+	 * AMO instructions have the .aq bit set, which simplifies synchronization
+	 * in out-of-order execution. The .aq bit functions similarly to
+	 * `fence 0, rw`; the '0' signifies that prior i/o/r/w operations are not
+	 * affected, making it more optimized than software-based spinlocks (below).
+	 */
+	amomax.w.aq	t1, t1, (a0)
+	bnez		t1, .Lwait
+#else
+	lw	t0, (a0)
+	/*
+	 * In this non-atomic spinlock, prior loads (specifically the lw above)
+	 * must be executed before the bnez and sw instructions below. `fence r, rw`
+	 * should make every thread to observe the most recent value stored in the
+	 * lock. This software-based spinlock is not reliable under high contention.
+	 */
+	fence	r, rw
+	bnez	t0, .Lwait
+	sw	t1, (a0)
+#endif
+
+	ld	t0, 0(sp)
+	ld	t1, 8(sp)
+	addi	sp, sp, 16
+	ret
+	.cfi_endproc
+	.size	spinlock_aq, . - spinlock_aq
+
+
+/*
+ * Function: spinlock_aq(int *a0)
+ * The parameter a0 holds the address of the lock to be utilized.
+ */
+spinlock_rl:
+	.cfi_startproc
+#ifdef __riscv_a
+	amoswap.w.rl	zero, zero, (a0)
+#else
+	/*
+	 * Prior stores and loads must be completed before the subsequent store
+	 * (sw below). The fence.tso ensures that all prior loads are ordered
+	 * before any memory operation that follows, while all prior stores are
+	 * ordered only before successor stores (not loads). It functions
+	 * similarly to: fence r, rw + fence w, w.
+	 */
+	fence.tso
+	sw	zero, (a0)
+#endif
+	ret
+	.cfi_endproc
+	.size	spinlock_rl, . - spinlock_rl
 
 
 detect_cur_patch_wrapper:
@@ -410,11 +531,11 @@ detect_cur_patch_wrapper:
 
 	/* The table shows what the clobbered registers hold for each patch type
 	 *********************************************************************
-	 *      *    return address    *  original ra  *   a7 (ecall) value  *
+	 *      *    return address     * original ra *   a7 (ecall) value   *
 	 *********************************************************************
-	 * GW   * ra/UNUSED_SP_OFF(sp) *     0(sp)     *    a7 (unchanged)   *
-	 * MID  *       0(sp)          *     8(sp)     *    a7 (unchanged)   *
-	 * SML  *        a7            *     0(sp)     *  patch->syscall_num *
+	 * GW   * ra/UNUSED_SP_OFF1(sp) *    0(sp)    *    a7 (unchanged)    *
+	 * MID  *        0(sp)          *    8(sp)    *    a7 (unchanged)    *
+	 * SML  *         a7            *    0(sp)    *  patch->syscall_num  *
 	 *********************************************************************/
 
 	// a0 will hold TYPE_MID ret addr
@@ -422,13 +543,13 @@ detect_cur_patch_wrapper:
 	// a1 will hold TYPE_SML ret addr
 	mv	a1, a7
 	// a2 will hold TYPE_GW ret addr
-	ld	a2, UNUSED_SP_OFF(s0)
+	ld	a2, UNUSED_SP_OFF1(s0)
 
 	call	detect_cur_patch
 	/*
 	 * Returns:
 	 * a0 = patch type/syscall_num
-	 * a1 = reloc_instrs_addr
+	 * a1 = addr of relocated instrs
 	 */
 
 	// store results (a0 is only relevant to TYPE_SML):
@@ -444,7 +565,7 @@ detect_cur_patch_wrapper:
 
 .Lsml:
 	sd	a7, RET_ADDR_SP_OFF(s0)
-	// NOTE: detect_cur_patch returned syscall_num, replace old a7 (x17) on the stack
+	// detect_cur_patch returned syscall_num, replace old a7 (x17) on the stack
 	SDSP_G	a0, 17
 	j	.Ldone
 
@@ -456,7 +577,7 @@ detect_cur_patch_wrapper:
 	j	.Ldone
 
 .Lgw:
-	ld	t0, UNUSED_SP_OFF(s0)
+	ld	t0, UNUSED_SP_OFF1(s0)
 	sd	t0, RET_ADDR_SP_OFF(s0)
 	j	.Ldone
 
@@ -495,7 +616,6 @@ intercept_routine_wrapper:
 	// unmatched values of a0/a1 imply that ecall was executed, fail-safe
 	j	.Lhandled
 
-
 .Lhandled:
 	// store results of ecall by replacing old a0/a1 on the stack
 	SDSP_G	a0, 10
@@ -512,13 +632,32 @@ intercept_routine_wrapper:
 	// restore original context before cloning
 	LOAD_CONTEXT_EPILOGUE
 
-	// move stack data in SHR .bss for very independent child (CLONE_SETTLS)
+	/*
+	 * Execute spinlock_aq before MV_STACK_TO_SHR because multiple threads can
+	 * create new threads, which may lead to contention in the SHR .bss. Being
+	 * outside of LOAD_CONTEXT_EPILOGUE and STORE_CONTEXT_PROLOGUE force the
+	 * use of extra space available on the stack to store and load ra and a0.
+	 */
+	sd	ra, UNUSED_SP_OFF1(sp)
+	sd	a0, UNUSED_SP_OFF2(sp)
+	la	a0, lock_SHR
+	call	spinlock_aq
+	ld	ra, UNUSED_SP_OFF1(sp)
+	ld	a0, UNUSED_SP_OFF2(sp)
+	// move stack data to SHR .bss for a very independent child (CLONE_SETTLS)
 	MV_STACK_TO_SHR
 
 	ecall
 
-	// move data back from SHR to stack
+	// move data back from SHR to the stack
 	MV_SHR_TO_STACK
+	// release lock
+	sd	ra, UNUSED_SP_OFF1(sp)
+	sd	a0, UNUSED_SP_OFF2(sp)
+	la	a0, lock_SHR
+	call	spinlock_rl
+	ld	ra, UNUSED_SP_OFF1(sp)
+	ld	a0, UNUSED_SP_OFF2(sp)
 
 	// save again context for each thread before going into C again
 	STORE_CONTEXT_PROLOGUE
@@ -530,7 +669,7 @@ intercept_routine_wrapper:
 	mv	a0, s0
 	call	intercept_routine_post_clone
 
-	// restore context after intercept_routine_post_clone
+	// restore context after C functions
 	LOAD_CONTEXT_EPILOGUE
 	ret
 	.cfi_endproc
@@ -538,39 +677,58 @@ intercept_routine_wrapper:
 
 
 	.section .data
+	.align	3
 	.global	asm_relocation_space_size
 	.hidden	asm_relocation_space_size
 asm_relocation_space_size:
 	.8byte	asm_entry_point - asm_relocation_space
+	/*
+	 * Natural alignment (alignment follows the symbol size) is crucial for
+	 * atomic instructions. Misalignment causes the address-misaligned or
+	 * access-fault exception. Also, misaligned LR/SC sequences also raise
+	 * the possibility of accessing multiple reservation sets at once.
+	 */
+	.align	2
+	.local	lock_SHR
+lock_SHR:
+	.4byte	0
 
 
 	/* .bss is shared space for multithreading in case of CLONE_SETTLS */
+	.align	3
 	.section .bss
-	.local	asm_return_address_shr
 	.local	asm_ra_orig_shr
+	.local	return_address_shr
 	.local	reloc_instrs_addr_shr
-asm_return_address_shr:
-	.zero	8
 asm_ra_orig_shr:
+	.zero	8
+return_address_shr:
 	.zero	8
 reloc_instrs_addr_shr:
 	.zero	8
 
 
+	.section .tdata
+	.align	2
+	.local	lock_TLS
+lock_TLS:
+	.4byte	0
+
+
 	/* .tbss is used for multithreading */
+	.align	3
 	.section .tbss
-	.global	asm_return_address
-	.hidden	asm_return_address
 	.global	asm_ra_orig
 	.hidden	asm_ra_orig
 	.global	asm_ra_temp
 	.hidden	asm_ra_temp
-	.local	reloc_instrs_addr
-asm_return_address:
-	.zero	8
+	.local	return_address
+	.local	reloc_ra_temp
 asm_ra_orig:
 	.zero	8
 asm_ra_temp:
 	.zero	8
-reloc_instrs_addr:
+return_address:
+	.zero	8
+reloc_ra_temp:
 	.zero	8

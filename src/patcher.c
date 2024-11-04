@@ -85,15 +85,17 @@
 #include <stdio.h>
 
 /*
- * While patching, these are used in the relocation space to prepare
- * the patch before it goes home (i.e., E.T. go home).
+ * While executing patched instructions, these global variables are used in the
+ * relocation space (intercept_irq_entry) in case the patched instructions use
+ * ra. The ra register is the only one that lacks the original value from glibc
+ * during patch execution, as it’s needed for jumps within intercept_irq_entry.
+ * These globals serve to temporarily load and store the original ra when it’s
+ * required by the patched instructions.
  */
-extern __thread uint64_t asm_return_address;
 extern __thread uint64_t asm_ra_orig;
 extern __thread uint64_t asm_ra_temp;
 
 struct tls_offset_table {
-	ptrdiff_t asm_return_address;
 	ptrdiff_t asm_ra_orig;
 	ptrdiff_t asm_ra_temp;
 } tls_offset_table;
@@ -103,8 +105,6 @@ init_tls_offset_table(void)
 {
 	uintptr_t tp_addr = (uintptr_t)__builtin_thread_pointer();
 
-	tls_offset_table.asm_return_address =
-		(uintptr_t)&asm_return_address - tp_addr;
 	tls_offset_table.asm_ra_orig =
 		(uintptr_t)&asm_ra_orig - tp_addr;
 	tls_offset_table.asm_ra_temp =
@@ -258,8 +258,12 @@ check_surrounding_instructions(struct intercept_desc *desc,
 	for (uint8_t i = 0; i < instrs_num; ++i) {
 		patchable_size += instrs[i].length;
 
-		if (i < syscall_idx && instrs[i].is_ra_used)
-			patch->is_ra_used_before = true;
+		if (instrs[i].is_ra_used) {
+			if (i < syscall_idx)
+				patch->is_ra_used_before = true;
+			else
+				patch->is_ra_used_after = true;
+		}
 	}
 
 	return patchable_size;
@@ -290,7 +294,7 @@ find_GW(struct intercept_desc *desc, struct patch_desc *patch)
 		}
 	}
 
-	// offsetting TYPE_MID to skip `addi sp, sp, -32`
+	// offsetting TYPE_MID to skip `addi sp, sp, -48`
 	if (patch->syscall_num == TYPE_MID)
 		patch->dst_jmp_patch += MODIFY_SP_INS_SIZE;
 }
@@ -406,19 +410,6 @@ align_start_addr_and_size(struct patch_desc *patch,
 #endif
 
 static void
-load_orig_ra(uint8_t **dst)
-{
-	uint8_t instrs_buff[MAX_PC_INS_SIZE];
-	uint8_t instrs_size;
-
-	instrs_size = rvpc_ld(instrs_buff, REG_RA, REG_TP,
-				(int32_t)tls_offset_table.asm_ra_orig);
-
-	memcpy(*dst, instrs_buff, instrs_size);
-	*dst += instrs_size;
-}
-
-static void
 load_orig_ra_temp(uint8_t **dst)
 {
 	uint8_t instrs_buff[MAX_PC_INS_SIZE * 2];
@@ -463,31 +454,50 @@ copy_jump(uint8_t **dst, uint8_t rd, uint8_t rs, int16_t offset)
 static void
 finalize_and_jump_back(uint8_t **dst, struct patch_desc *patch)
 {
-	uint8_t instrs_buff[MAX_PC_INS_SIZE * 4];
+	uint8_t instrs_buff[MAX_PC_INS_SIZE * 5];
 	uint8_t instrs_size = 0;
-	// this is the offset for TYPE_MID
-	uint8_t ra_offset = 8;
-
 	uint8_t ret_reg = patch->return_register;
+
+	// load original ra value if it's not used for jumping back
+	if (ret_reg != REG_RA)
+		instrs_size += rvpc_ld(instrs_buff + instrs_size,
+					REG_RA, REG_SP, 0);
 
 	switch (patch->syscall_num) {
 	case TYPE_GW:
-		ra_offset = 0;
-		/* fallthrough */
-	case TYPE_MID:
-		instrs_size += rvpc_addisp(instrs_buff + instrs_size, -32);
-		instrs_size += rvpc_sd(instrs_buff + instrs_size,
-					REG_RA, REG_SP, ra_offset);
+		// load the return address into the register used for jumping back
+		instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 16);
 		break;
-	default:
-		if (!patch->return_register)
+	case TYPE_MID:
+		/*
+		 * TYPE_MID expects the original ra value at different offset
+		 * than TYPE_GW, so reorganize the stack by moving the value at
+		 * offset 0 to offset 8.
+		 */
+		instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 0);
+		instrs_size += rvpc_sd(instrs_buff + instrs_size, ret_reg, REG_SP, 8);
+
+		// load the return address into the register used for jumping back
+		instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 16);
+		break;
+	default: // TYPE_SML
+		// if not specified, TYPE_SML uses REG_A7 to jump back to glibc
+		if (!ret_reg)
 			ret_reg = REG_A7;
+
+		// load the return address into the register used for jumping back
+		instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 16);
+
+		/*
+		 * The TYPE_SML patch doesn't allocate any stack space in glibc,
+		 * but sp gets reduced by 48 in GW, so deallocate the stack here
+		 * before jumping back to TYPE_SML.
+		 */
+		instrs_size += rvpc_addisp(instrs_buff + instrs_size, 48);
 		break;
 	}
 
-	instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_TP,
-				(int32_t)tls_offset_table.asm_return_address);
-
+	// copy the jump instruction to return to glibc
 	instrs_size += rvpc_jalr(instrs_buff + instrs_size, REG_ZERO, ret_reg, 0);
 
 	memcpy(*dst, instrs_buff, instrs_size);
@@ -524,16 +534,25 @@ relocate_instrs(struct patch_desc *patch, uint8_t **dst)
 	 */
 	copy_jump(dst, REG_RA, REG_RA, 0);
 
-	/* restore original ra before copying the following instructions */
-	load_orig_ra(dst);
-
 	/* copy patched instructions after ecall */
 	after_ecall_size = patch_size - before_ecall_size - ECALL_INS_SIZE;
 	if (after_ecall_size > 0) {
+		if (patch->is_ra_used_after)
+			load_orig_ra_temp(dst);
+
 		memcpy(*dst, patch->syscall_addr + ECALL_INS_SIZE,
 			after_ecall_size);
 		*dst += after_ecall_size;
+
+		if (patch->is_ra_used_after)
+			store_new_ra_temp(dst);
 	}
+
+	/*
+	 * the instructions after ecall are copied,
+	 * copy jump instruction to return to asm_entry_point
+	 */
+	copy_jump(dst, REG_RA, REG_RA, 0);
 
 	/* prepare for jump and go back to glibc */
 	finalize_and_jump_back(dst, patch);
@@ -624,7 +643,7 @@ copy_trampoline(uint8_t *trampoline_address)
 	uint8_t instrs_buff[MAX_PC_INS_SIZE + MAX_P_INS_SIZE];
 	uint8_t instrs_size = 0;
 
-	instrs_size += rvpc_sd(instrs_buff + instrs_size, REG_RA, REG_SP, 24);
+	instrs_size += rvpc_sd(instrs_buff + instrs_size, REG_RA, REG_SP, 32);
 
 	instrs_size += rvp_jump_abs(instrs_buff + instrs_size, REG_ZERO,
 					REG_RA, destination);
@@ -660,14 +679,14 @@ copy_GW(struct intercept_desc *desc, const struct patch_desc *patch)
 	}
 #endif
 
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -32);
+	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -48);
 	instrs_size += rvpc_sd(instrs_buff + instrs_size, ret_reg, REG_SP, 0);
 
 	instrs_size += rvp_jump_2GB(instrs_buff + instrs_size, ret_reg, ret_reg,
 					jalr_addr, destination);
 
 	instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 0);
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 32);
+	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 48);
 
 #ifdef __riscv_c
 	if (patch->end_with_c_nop)
@@ -699,14 +718,14 @@ copy_MID(const struct patch_desc *patch)
 	}
 #endif
 
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -32);
+	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -48);
 	instrs_size += rvpc_sd(instrs_buff + instrs_size, ret_reg, REG_SP, 8);
 
 	instrs_size += rvp_jal(instrs_buff + instrs_size, ret_reg,
 				jal_addr, GW_entry_addr);
 
 	instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 8);
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 32);
+	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 48);
 
 #ifdef __riscv_c
 	if (patch->end_with_c_nop)

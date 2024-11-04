@@ -116,6 +116,7 @@ struct patch_desc {
 	struct intercept_disasm_result *surrounding_instrs;
 	uint8_t syscall_idx;
 	bool is_ra_used_before;
+	bool is_ra_used_after;
 	uint8_t return_register;
 };
 
