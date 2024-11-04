@@ -34,19 +34,12 @@
  * intercept_irq_entry.S -- TODO: docs
  */
 
+// offsets (constants) common to both patcher.c and this TU
+#include "patch_offsets.h"
+
 	/* Constants */
 	// the final size is determined in runtime, but this is the minimum size
 	.equ	RELOCATION_SIZE, 0x80000
-	/*
-	 * sp is reduced by this offset in glibc due to patching. Before executing
-	 * relocated instrs, sp is increased by this const to restore orig value.
-	 */
-	.equ	GLIBC_SP_OFF, 48
-	.equ	ORIG_RA_SP_OFF, 0
-	.equ	RET_ADDR_SP_OFF, 16
-	.equ	RELOC_ADDR_SP_OFF, 24
-	.equ	UNUSED_SP_OFF1, 32
-	.equ	UNUSED_SP_OFF2, 40
 	// NOTE: align this to 16, (NR_GPR + NR_FPR) * 8 % 16 == 0
 	.equ	NR_GPR, 32
 	.equ	NR_FPR, 32
@@ -225,28 +218,28 @@
 	 * MV_TLS_TO_STACK, just do the opposite after the execution is done.
 	 */
 	.macro MV_STACK_TO_TLS
-		sd	t0, UNUSED_SP_OFF1(sp)
-		sd	t1, UNUSED_SP_OFF2(sp)
+		sd	t0, UNUSED_OFF1(sp)
+		sd	t1, UNUSED_OFF2(sp)
 
-		ld	t0, ORIG_RA_SP_OFF(sp)
+		ld	t0, ORIG_RA_OFF(sp)
 		SDSYMT	t0, asm_ra_orig, t1
-		ld	t0, RET_ADDR_SP_OFF(sp)
+		ld	t0, RET_ADDR_OFF(sp)
 		SDSYMT	t0, return_address, t1
 
-		ld	t0, UNUSED_SP_OFF1(sp)
-		ld	t1, UNUSED_SP_OFF2(sp)
-		addi	sp, sp, GLIBC_SP_OFF
+		ld	t0, UNUSED_OFF1(sp)
+		ld	t1, UNUSED_OFF2(sp)
+		addi	sp, sp, PATCH_SP_OFF
 	.endm
 	.macro MV_TLS_TO_STACK
-		addi	sp, sp, -GLIBC_SP_OFF
-		sd	t0, UNUSED_SP_OFF1(sp)
+		addi	sp, sp, -PATCH_SP_OFF
+		sd	t0, UNUSED_OFF1(sp)
 
 		LDSYMT	t0, asm_ra_orig
-		sd	t0, ORIG_RA_SP_OFF(sp)
+		sd	t0, ORIG_RA_OFF(sp)
 		LDSYMT	t0, return_address
-		sd	t0, RET_ADDR_SP_OFF(sp)
+		sd	t0, RET_ADDR_OFF(sp)
 
-		ld	t0, UNUSED_SP_OFF1(sp)
+		ld	t0, UNUSED_OFF1(sp)
 	.endm
 
 	/*
@@ -255,32 +248,32 @@
 	 * the child process have to be ready immediately after creation.
 	 */
 	.macro MV_STACK_TO_SHR
-		sd	t0, UNUSED_SP_OFF1(sp)
-		sd	t1, UNUSED_SP_OFF2(sp)
+		sd	t0, UNUSED_OFF1(sp)
+		sd	t1, UNUSED_OFF2(sp)
 
-		ld	t0, ORIG_RA_SP_OFF(sp)
+		ld	t0, ORIG_RA_OFF(sp)
 		sd	t0, asm_ra_orig_shr, t1
-		ld	t0, RET_ADDR_SP_OFF(sp)
+		ld	t0, RET_ADDR_OFF(sp)
 		sd	t0, return_address_shr, t1
-		ld	t0, RELOC_ADDR_SP_OFF(sp)
+		ld	t0, RELOC_ADDR_OFF(sp)
 		sd	t0, reloc_instrs_addr_shr, t1
 
-		ld	t0, UNUSED_SP_OFF1(sp)
-		ld	t1, UNUSED_SP_OFF2(sp)
-		addi	sp, sp, GLIBC_SP_OFF
+		ld	t0, UNUSED_OFF1(sp)
+		ld	t1, UNUSED_OFF2(sp)
+		addi	sp, sp, PATCH_SP_OFF
 	.endm
 	.macro MV_SHR_TO_STACK
-		addi	sp, sp, -GLIBC_SP_OFF
-		sd	t0, UNUSED_SP_OFF1(sp)
+		addi	sp, sp, -PATCH_SP_OFF
+		sd	t0, UNUSED_OFF1(sp)
 
 		ld	t0, asm_ra_orig_shr
-		sd	t0, ORIG_RA_SP_OFF(sp)
+		sd	t0, ORIG_RA_OFF(sp)
 		ld	t0, return_address_shr
-		sd	t0, RET_ADDR_SP_OFF(sp)
+		sd	t0, RET_ADDR_OFF(sp)
 		ld	t0, reloc_instrs_addr_shr
-		sd	t0, RELOC_ADDR_SP_OFF(sp)
+		sd	t0, RELOC_ADDR_OFF(sp)
 
-		ld	t0, UNUSED_SP_OFF1(sp)
+		ld	t0, UNUSED_OFF1(sp)
 	.endm
 
 
@@ -346,9 +339,9 @@ asm_entry_point:
 	 * not used (INTERCEPT_NO_TRAMPOLINE=1). ra (the return address of   *
 	 * a GW) must be stored on the stack before detect_cur_patch_wrapper *
 	 * overwrites it. If the trampoline had been used, it would have     *
-	 * already stored ra on the stack at offset UNUSED_SP_OFF1.          *
+	 * already stored ra on the stack at offset UNUSED_OFF1.             *
 	 *********************************************************************/
-	sd	ra, UNUSED_SP_OFF1(sp)
+	sd	ra, UNUSED_OFF1(sp)
 	/* This is the entry point for a trampoline jump (library default) */
 
 	// gather patch information and mostly restore the original context
@@ -379,7 +372,7 @@ asm_entry_point:
 	 * instructions at runtime; for this final part, see                 *
 	 * finalize_and_jump_back(). Bye-bye, patch! Good luck out there!    *
 	 *********************************************************************/
-	ld	ra, RELOC_ADDR_SP_OFF(sp)
+	ld	ra, RELOC_ADDR_OFF(sp)
 	jalr	zero, ra
 	.cfi_endproc
 	.size	asm_entry_point, . - asm_entry_point
@@ -392,8 +385,8 @@ asm_entry_point:
 exec_relocated_instructions:
 	.cfi_startproc
 	// save ra and a0 on the stack before the spinlock, "prologue"
-	sd	ra, UNUSED_SP_OFF1(sp)
-	sd	a0, UNUSED_SP_OFF2(sp)
+	sd	ra, UNUSED_OFF1(sp)
+	sd	a0, UNUSED_OFF2(sp)
 
 	/*
 	 * TLS is used here to save data while executing patched instructions;
@@ -403,18 +396,18 @@ exec_relocated_instructions:
 	call	spinlock_aq
 
 	// now ra can be stored in reloc_ra_temp before the stack gets deallocated
-	ld	ra, UNUSED_SP_OFF1(sp)
+	ld	ra, UNUSED_OFF1(sp)
 	SDSYMT	ra, reloc_ra_temp, a0
 
 	// used as an argument with the spinlock, restore to the original value
-	ld	a0, UNUSED_SP_OFF2(sp)
+	ld	a0, UNUSED_OFF2(sp)
 
 	/*
 	 * Before executing the relocated instructions, sp must be in its original
 	 * state. Before deallocating the stack, important addresses will be
 	 * stored in the TLS section to preserve them (MV_STACK_TO_TLS).
 	 */
-	ld	ra, RELOC_ADDR_SP_OFF(sp)
+	ld	ra, RELOC_ADDR_OFF(sp)
 	MV_STACK_TO_TLS
 
 	/*
@@ -427,25 +420,25 @@ exec_relocated_instructions:
 	/*
 	 * After executing the relocated instructions, ra holds the address of
 	 * the next block of relocated instructions. That address will be stored
-	 * on the stack at offset RELOC_ADDR_SP_OFF.
+	 * on the stack at offset RELOC_ADDR_OFF.
 	 */
 	MV_TLS_TO_STACK
-	sd	ra, RELOC_ADDR_SP_OFF(sp)
+	sd	ra, RELOC_ADDR_OFF(sp)
 
 	// load ra from the start of this function
 	LDSYMT	ra, reloc_ra_temp
 
 	// store ra and a0 on the stack before calling spinlock_rl
-	sd	ra, UNUSED_SP_OFF1(sp)
-	sd	a0, UNUSED_SP_OFF2(sp)
+	sd	ra, UNUSED_OFF1(sp)
+	sd	a0, UNUSED_OFF2(sp)
 
 	/* All data is back on the stack, release lock */
 	LASYMT	a0, lock_TLS
 	call	spinlock_rl
 
 	// "epilogue"
-	ld	ra, UNUSED_SP_OFF1(sp)
-	ld	a0, UNUSED_SP_OFF2(sp)
+	ld	ra, UNUSED_OFF1(sp)
+	ld	a0, UNUSED_OFF2(sp)
 	ret
 	.cfi_endproc
 	.size	exec_relocated_instructions, . - exec_relocated_instructions
@@ -531,11 +524,11 @@ detect_cur_patch_wrapper:
 
 	/* The table shows what the clobbered registers hold for each patch type
 	 *********************************************************************
-	 *      *    return address     * original ra *   a7 (ecall) value   *
+	 *      *    return address    * original ra *   a7 (ecall) value    *
 	 *********************************************************************
-	 * GW   * ra/UNUSED_SP_OFF1(sp) *    0(sp)    *    a7 (unchanged)    *
-	 * MID  *        0(sp)          *    8(sp)    *    a7 (unchanged)    *
-	 * SML  *         a7            *    0(sp)    *  patch->syscall_num  *
+	 * GW   *  ra/UNUSED_OFF1(sp)  *    0(sp)    *    a7 (unchanged)     *
+	 * MID  *        0(sp)         *    8(sp)    *    a7 (unchanged)     *
+	 * SML  *         a7           *    0(sp)    *  patch->syscall_num   *
 	 *********************************************************************/
 
 	// a0 will hold TYPE_MID ret addr
@@ -543,7 +536,7 @@ detect_cur_patch_wrapper:
 	// a1 will hold TYPE_SML ret addr
 	mv	a1, a7
 	// a2 will hold TYPE_GW ret addr
-	ld	a2, UNUSED_SP_OFF1(s0)
+	ld	a2, UNUSED_OFF1(s0)
 
 	call	detect_cur_patch
 	/*
@@ -553,7 +546,7 @@ detect_cur_patch_wrapper:
 	 */
 
 	// store results (a0 is only relevant to TYPE_SML):
-	sd	a1, RELOC_ADDR_SP_OFF(s0)
+	sd	a1, RELOC_ADDR_OFF(s0)
 	// restore original a7 in case it was clobbered
 	mv	a7, s1
 
@@ -564,7 +557,7 @@ detect_cur_patch_wrapper:
 	beq	a0, t0, .Lgw
 
 .Lsml:
-	sd	a7, RET_ADDR_SP_OFF(s0)
+	sd	a7, RET_ADDR_OFF(s0)
 	// detect_cur_patch returned syscall_num, replace old a7 (x17) on the stack
 	SDSP_G	a0, 17
 	j	.Ldone
@@ -572,13 +565,13 @@ detect_cur_patch_wrapper:
 .Lmid:
 	ld	t0, 0(s0)
 	ld	t1, 8(s0)
-	sd	t0, RET_ADDR_SP_OFF(s0)
-	sd	t1, ORIG_RA_SP_OFF(s0)
+	sd	t0, RET_ADDR_OFF(s0)
+	sd	t1, ORIG_RA_OFF(s0)
 	j	.Ldone
 
 .Lgw:
-	ld	t0, UNUSED_SP_OFF1(s0)
-	sd	t0, RET_ADDR_SP_OFF(s0)
+	ld	t0, UNUSED_OFF1(s0)
+	sd	t0, RET_ADDR_OFF(s0)
 	j	.Ldone
 
 .Ldone:
@@ -596,7 +589,7 @@ intercept_routine_wrapper:
 	addi	s0, sp, CONTEXT_SIZE
 
 	// pass return address to intercept_routine to detect patch_desc
-	ld	a6, RET_ADDR_SP_OFF(s0)
+	ld	a6, RET_ADDR_OFF(s0)
 
 	call	intercept_routine
 	/*
@@ -638,12 +631,12 @@ intercept_routine_wrapper:
 	 * outside of LOAD_CONTEXT_EPILOGUE and STORE_CONTEXT_PROLOGUE force the
 	 * use of extra space available on the stack to store and load ra and a0.
 	 */
-	sd	ra, UNUSED_SP_OFF1(sp)
-	sd	a0, UNUSED_SP_OFF2(sp)
+	sd	ra, UNUSED_OFF1(sp)
+	sd	a0, UNUSED_OFF2(sp)
 	la	a0, lock_SHR
 	call	spinlock_aq
-	ld	ra, UNUSED_SP_OFF1(sp)
-	ld	a0, UNUSED_SP_OFF2(sp)
+	ld	ra, UNUSED_OFF1(sp)
+	ld	a0, UNUSED_OFF2(sp)
 	// move stack data to SHR .bss for a very independent child (CLONE_SETTLS)
 	MV_STACK_TO_SHR
 
@@ -652,12 +645,12 @@ intercept_routine_wrapper:
 	// move data back from SHR to the stack
 	MV_SHR_TO_STACK
 	// release lock
-	sd	ra, UNUSED_SP_OFF1(sp)
-	sd	a0, UNUSED_SP_OFF2(sp)
+	sd	ra, UNUSED_OFF1(sp)
+	sd	a0, UNUSED_OFF2(sp)
 	la	a0, lock_SHR
 	call	spinlock_rl
-	ld	ra, UNUSED_SP_OFF1(sp)
-	ld	a0, UNUSED_SP_OFF2(sp)
+	ld	ra, UNUSED_OFF1(sp)
+	ld	a0, UNUSED_OFF2(sp)
 
 	// save again context for each thread before going into C again
 	STORE_CONTEXT_PROLOGUE

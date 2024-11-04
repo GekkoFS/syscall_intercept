@@ -74,6 +74,7 @@
 #include "intercept_util.h"
 #include "intercept_log.h"
 #include "rv_encode.h"
+#include "patch_offsets.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -294,7 +295,7 @@ find_GW(struct intercept_desc *desc, struct patch_desc *patch)
 		}
 	}
 
-	// offsetting TYPE_MID to skip `addi sp, sp, -48`
+	// offsetting TYPE_MID to skip `addi sp, sp, -PATCH_SP_OFF`
 	if (patch->syscall_num == TYPE_MID)
 		patch->dst_jmp_patch += MODIFY_SP_INS_SIZE;
 }
@@ -461,24 +462,28 @@ finalize_and_jump_back(uint8_t **dst, struct patch_desc *patch)
 	// load original ra value if it's not used for jumping back
 	if (ret_reg != REG_RA)
 		instrs_size += rvpc_ld(instrs_buff + instrs_size,
-					REG_RA, REG_SP, 0);
+					REG_RA, REG_SP, ORIG_RA_OFF);
 
 	switch (patch->syscall_num) {
 	case TYPE_GW:
 		// load the return address into the register used for jumping back
-		instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 16);
+		instrs_size += rvpc_ld(instrs_buff + instrs_size,
+					ret_reg, REG_SP, RET_ADDR_OFF);
 		break;
 	case TYPE_MID:
 		/*
 		 * TYPE_MID expects the original ra value at different offset
 		 * than TYPE_GW, so reorganize the stack by moving the value at
-		 * offset 0 to offset 8.
+		 * offset ORIG_RA_OFF to offset MID_ORIG_RA_OFF.
 		 */
-		instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 0);
-		instrs_size += rvpc_sd(instrs_buff + instrs_size, ret_reg, REG_SP, 8);
+		instrs_size += rvpc_ld(instrs_buff + instrs_size,
+					ret_reg, REG_SP, ORIG_RA_OFF);
+		instrs_size += rvpc_sd(instrs_buff + instrs_size,
+					ret_reg, REG_SP, MID_ORIG_RA_OFF);
 
 		// load the return address into the register used for jumping back
-		instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 16);
+		instrs_size += rvpc_ld(instrs_buff + instrs_size,
+					ret_reg, REG_SP, RET_ADDR_OFF);
 		break;
 	default: // TYPE_SML
 		// if not specified, TYPE_SML uses REG_A7 to jump back to glibc
@@ -486,14 +491,15 @@ finalize_and_jump_back(uint8_t **dst, struct patch_desc *patch)
 			ret_reg = REG_A7;
 
 		// load the return address into the register used for jumping back
-		instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 16);
+		instrs_size += rvpc_ld(instrs_buff + instrs_size,
+					ret_reg, REG_SP, RET_ADDR_OFF);
 
 		/*
 		 * The TYPE_SML patch doesn't allocate any stack space in glibc,
-		 * but sp gets reduced by 48 in GW, so deallocate the stack here
-		 * before jumping back to TYPE_SML.
+		 * but sp gets reduced by PATCH_SP_OFF in GW, so deallocate the
+		 * stack here before jumping back to TYPE_SML.
 		 */
-		instrs_size += rvpc_addisp(instrs_buff + instrs_size, 48);
+		instrs_size += rvpc_addisp(instrs_buff + instrs_size, PATCH_SP_OFF);
 		break;
 	}
 
@@ -643,7 +649,8 @@ copy_trampoline(uint8_t *trampoline_address)
 	uint8_t instrs_buff[MAX_PC_INS_SIZE + MAX_P_INS_SIZE];
 	uint8_t instrs_size = 0;
 
-	instrs_size += rvpc_sd(instrs_buff + instrs_size, REG_RA, REG_SP, 32);
+	instrs_size += rvpc_sd(instrs_buff + instrs_size,
+				REG_RA, REG_SP, UNUSED_OFF1);
 
 	instrs_size += rvp_jump_abs(instrs_buff + instrs_size, REG_ZERO,
 					REG_RA, destination);
@@ -679,14 +686,16 @@ copy_GW(struct intercept_desc *desc, const struct patch_desc *patch)
 	}
 #endif
 
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -48);
-	instrs_size += rvpc_sd(instrs_buff + instrs_size, ret_reg, REG_SP, 0);
+	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -PATCH_SP_OFF);
+	instrs_size += rvpc_sd(instrs_buff + instrs_size,
+				ret_reg, REG_SP, ORIG_RA_OFF);
 
 	instrs_size += rvp_jump_2GB(instrs_buff + instrs_size, ret_reg, ret_reg,
 					jalr_addr, destination);
 
-	instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 0);
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 48);
+	instrs_size += rvpc_ld(instrs_buff + instrs_size,
+				ret_reg, REG_SP, ORIG_RA_OFF);
+	instrs_size += rvpc_addisp(instrs_buff + instrs_size, PATCH_SP_OFF);
 
 #ifdef __riscv_c
 	if (patch->end_with_c_nop)
@@ -718,14 +727,16 @@ copy_MID(const struct patch_desc *patch)
 	}
 #endif
 
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -48);
-	instrs_size += rvpc_sd(instrs_buff + instrs_size, ret_reg, REG_SP, 8);
+	instrs_size += rvpc_addisp(instrs_buff + instrs_size, -PATCH_SP_OFF);
+	instrs_size += rvpc_sd(instrs_buff + instrs_size,
+				ret_reg, REG_SP, MID_ORIG_RA_OFF);
 
 	instrs_size += rvp_jal(instrs_buff + instrs_size, ret_reg,
 				jal_addr, GW_entry_addr);
 
-	instrs_size += rvpc_ld(instrs_buff + instrs_size, ret_reg, REG_SP, 8);
-	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 48);
+	instrs_size += rvpc_ld(instrs_buff + instrs_size,
+				ret_reg, REG_SP, MID_ORIG_RA_OFF);
+	instrs_size += rvpc_addisp(instrs_buff + instrs_size, PATCH_SP_OFF);
 
 #ifdef __riscv_c
 	if (patch->end_with_c_nop)
