@@ -825,7 +825,7 @@ activate_patches(struct intercept_desc *desc)
 		}
 	}
 
-	__builtin___clear_cache(first_page, first_page + size);
+	__builtin___clear_cache((char *)first_page, (char *)(first_page + size));
 
 	mprotect_no_intercept(first_page, size,
 	    PROT_READ | PROT_EXEC,

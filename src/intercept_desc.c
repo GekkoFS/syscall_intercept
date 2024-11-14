@@ -617,7 +617,7 @@ allocate_trampoline(struct intercept_desc *desc)
 	if (desc->trampoline_address == MAP_FAILED)
 		xabort("unable to allocate space for trampoline");
 
-	__builtin___clear_cache(guess, guess + TRAMPOLINE_SIZE);
+	__builtin___clear_cache((char *)guess, (char *)(guess + TRAMPOLINE_SIZE));
 }
 
 /*

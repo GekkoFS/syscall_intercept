@@ -429,7 +429,7 @@ extern uint64_t asm_relocation_space_size;
 static uint8_t *cur_asm_relocation_space = asm_relocation_space;
 
 static bool
-is_asm_relocation_space_full()
+is_asm_relocation_space_full(void)
 {
 	return (uint64_t)(cur_asm_relocation_space - asm_relocation_space) >
 		asm_relocation_space_size;
@@ -452,8 +452,8 @@ write_enable_asm_relocation_space(bool enable_write)
 	} else {
 		prot = PROT_READ | PROT_EXEC;
 		err_msg = "asm_relocation_space write disable";
-		__builtin___clear_cache(asm_relocation_space,
-					asm_relocation_space + asm_relocation_space_size);
+		__builtin___clear_cache((char *)asm_relocation_space,
+					(char *)(asm_relocation_space + asm_relocation_space_size));
 	}
 
 	mprotect_no_intercept(asm_relocation_space, asm_relocation_space_size,

@@ -110,7 +110,7 @@ function(set_isa_extensions)
 
 	# Check if compiler supports extensions that were found
 	execute_process(
-		COMMAND gcc -march=${isa_extensions} -c -x c /dev/null
+		COMMAND ${CMAKE_C_COMPILER} -march=${isa_extensions} -c -x c /dev/null
 		OUTPUT_FILE /dev/null
 		ERROR_FILE /dev/null
 		RESULT_VARIABLE comp_result
@@ -125,7 +125,7 @@ function(set_isa_extensions)
 		set(isa_extensions "${prefix}${suffix}")
 
 		execute_process(
-			COMMAND gcc -march=${isa_extensions} -c -x c /dev/null
+			COMMAND ${CMAKE_C_COMPILER} -march=${isa_extensions} -c -x c /dev/null
 			OUTPUT_FILE /dev/null
 			ERROR_FILE /dev/null
 			RESULT_VARIABLE comp_result

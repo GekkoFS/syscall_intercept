@@ -55,6 +55,10 @@ struct intercept_disasm_context {
 	const unsigned char *end;
 };
 
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wstrict-prototypes"
+#endif
 /*
  * nop_vsnprintf - A dummy function, serving as a callback called by
  * the capstone implementation. The syscall_intercept library never makes
@@ -69,6 +73,9 @@ nop_vsnprintf()
 {
 	return 0;
 }
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 
 /*
  * intercept_disasm_init -- should be called before disassembling a region of
