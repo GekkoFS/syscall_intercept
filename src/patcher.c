@@ -276,11 +276,10 @@ find_GW(struct intercept_desc *desc, struct patch_desc *patch)
 	// TYPE_MID and TYPE_SML jump address and offset (TYPE_MID)
 	const uint8_t *jump_from;
 	if (patch->syscall_num == TYPE_MID)
-		jump_from = patch->return_address - JAL_INS_SIZE +
+		jump_from = patch->return_address - JAL_INS_SIZE -
 				MODIFY_SP_INS_SIZE;
 	else // TYPE_SML
 		jump_from = patch->return_address - JAL_INS_SIZE;
-
 
 	for (uint32_t patch_i = 0; patch_i < desc->count; ++patch_i) {
 		struct patch_desc *patch_GW = desc->items + patch_i;
