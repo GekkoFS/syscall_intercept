@@ -810,7 +810,7 @@ static int log_fd = -1;
 void
 intercept_setup_log(const char *path, const char *trunc)
 {
-	char full_path[PATH_MAX];
+	char full_path[PATH_MAX] = {0};
 
 	if (path == NULL || path[0] == '\0')
 		return;
