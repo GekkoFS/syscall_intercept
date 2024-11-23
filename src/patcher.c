@@ -288,7 +288,7 @@ find_GW(struct intercept_desc *desc, struct patch_desc *patch)
 		if (patch_GW->syscall_num != TYPE_GW)
 			continue;
 
-		if (labs(patch_GW->dst_jmp_patch - jump_from) < JAL_MID_REACH) {
+		if (labs(patch_GW->dst_jmp_patch - jump_from) < JAL_AVG_REACH) {
 			patch->dst_jmp_patch = patch_GW->dst_jmp_patch;
 			break;
 		}

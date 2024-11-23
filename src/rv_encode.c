@@ -398,7 +398,7 @@ rv_auipc(uint8_t *instr_buff, uint8_t rd, int32_t imm)
 uint8_t
 rv_jal(uint8_t *instr_buff, uint8_t rd, int32_t imm)
 {
-	if (imm < -JAL_MID_REACH - 1 || imm >= JAL_MID_REACH)
+	if (imm < -JAL_AVG_REACH - 1 || imm >= JAL_AVG_REACH)
 		return 0;
 
 	uint32_t instr = 0;

@@ -76,11 +76,11 @@
 				JALR_INS_SIZE)
 
 /*
- * NOTE: JAL_MID_REACH reach lays in between +/- offset, the positive offset is
+ * NOTE: JAL_AVG_REACH reach lays in between +/- offset, the positive offset is
  *       0xffffe and the negative is 0x100000.
  *       The bias is 2 because of the implicit bit.
  */
-#define JAL_MID_REACH		0xfffff
+#define JAL_AVG_REACH		0xfffff
 /*
  * NOTE: JUMP_2GB_MAX_REACH reach applies to the negative offset
  * 	 while the positive offset is: JUMP_2GB_MAX_REACH - 4KB
