@@ -51,7 +51,7 @@ date: syscall_intercept API version 0.1.0
 ```c
 #include <libsyscall_intercept_hook_point.h>
 ```
-```sh
+```bash
 cc -lsyscall_intercept -fpic -shared source.c -o preloadlib.so
 
 LD_PRELOAD=preloadlib.so ./application
@@ -63,7 +63,7 @@ for hooking Linux system calls in user space. This is achieved
 by hotpatching the machine code of the standard C library in the
 memory of a process. The user of this library can provide the
 functionality of almost any syscall in user space, using the very
-simple API specified in the libsyscall_intercept\_hook\_point.h header file:
+simple API specified in the libsyscall\_intercept\_hook\_point.h header file:
 ```c
 int (*intercept_hook_point)(long syscall_number,
 			long arg0, long arg1,
@@ -73,41 +73,54 @@ int (*intercept_hook_point)(long syscall_number,
 ```
 
 The user of the library shall assign to the variable called
-intercept_hook_point a pointer to the address of a callback function.
+intercept\_hook\_point a pointer to the address of a callback function.
 A non-zero return value returned by the callback function is used
 to signal to the intercepting library that the specific system
 call was ignored by the user and the original syscall should be
 executed. A zero return value signals that the user takes over the
 system call. In this case, the result of the system call
-(the value stored in the RAX register after the system call)
+(the value stored in the A0 register after the system call)
 can be set via the \*result pointer. In order to use the library,
 the intercepting code is expected to be loaded using the
-LD_PRELOAD feature provided by the system loader.
+LD\_PRELOAD feature provided by the system loader.
 
-All syscalls issued by libc are intercepted. Syscalls made
-by code outside libc are not intercepted. In order to
-be able to issue syscalls that are not intercepted, a
-convenience function is provided by the library:
+All syscalls issued by glibc are intercepted. Syscalls made
+by code outside glibc are not intercepted by default (see
+INTERCEPT\_ALL\_OBJS below). In order to be able to issue
+syscalls that are not intercepted, a convenience function
+is provided by the library:
 ```c
 struct wrapper_ret syscall_no_intercept(long syscall_number, ...);
 ```
+The struct `wrapper_ret` is part of the RISC-V version of this library's API:
+```c
+struct wrapper_ret {
+    int64_t a0;
+    int64_t a1;
+}
+```
+If A1 is modified by a syscall, this struct will preserve both
+return values (A0 and A1).
 
 In addition to hooking syscalls before they would be called, the API
-has one special hook point that is executed after thread creation, right
-after a clone syscall creating a thread returns in a child thread:
+has two special hook points that are executed after thread creation,
+right after a clone syscall creating a thread returns:
 ```c
 void (*intercept_hook_point_clone_child)(void);
+void (*intercept_hook_point_clone_parent)(long pid);
 ```
-Using `intercept_hook_point_clone_child`, one can be notified of thread
-creations.
+The parameter `long pid` for the parent's hook is a
+PID of a newly created child thread.  
+Using `intercept_hook_point_clone_child` or `intercept_hook_point_clone_parent`,
+one can be notified of thread creations.
 
 To make it easy to detect syscall return values indicating errors, one
-can use the syscall_error_code function:
+can use the syscall\_error\_code function:
 ```c
 int syscall_error_code(long result);
 ```
-When passed a return value from syscall_no_intercept, this function
-can translate it to an error code equivalent to a libc error code:
+When passed a return value from syscall\_no\_intercept, this function
+can translate it to an error code equivalent to a glibc error code:
 ```c
 struct wrapper_ret ret;
 ret = syscall_no_intercept(SYS_open, "file", O_RDWR);
@@ -117,37 +130,34 @@ if (syscall_error_code(fd) != 0)
 ```
 
 # ENVIRONMENT VARIABLES #
-Three environment variables control the operation of the library:
+Several environment variables control the operation of the library:
 
-*INTERCEPT_LOG* -- when set, the library logs each syscall intercepted
-to a file. If it ends with "-" the path of the file is formed by appending
-a process id to the value provided in the environment variable.
-E.g.: initializing the library in a process with pid 123 when the
-INTERCEPT_LOG is set to "intercept.log-" will result in a log file named
-intercept.log-123.
+_INTERCEPT_LOG_ -- When set, the library logs each intercepted syscall
+to a file. If the variable ends with "-", the filename is suffixed with
+the process ID. E.g., for a process with PID 123 and INTERCEPT\_LOG set
+to "intercept.log-", the resulting log file would be "intercept.log-123".
 
-*INTERCEPT_LOG_TRUNC* -- when set to 0, the log file from INTERCEPT_LOG
-is not truncated.
+_INTERCEPT_LOG_TRUNC_ -- When set to 0, the log file specified by
+INTERCEPT\_LOG is not truncated.
 
-*INTERCEPT_HOOK_CMDLINE_FILTER* -- when set, the library
-checks the contents of the /proc/self/cmdline file.
-Hotpatching, and syscall intercepting is only done, if the
-last component of the first zero terminated string in
-/proc/self/cmdline matches the string provided
-in the environment variable. This can also be queried
-by the user of the library:
-
-*INTERCEPT_NO_TRAMPOLINE* -- when set, trampoline is not used to jump from
-the patched library to the syscall_intercept library.
-
-*INTERCEPT_DEBUG_DUMP* -- when set, the output is verbose.
-
-*INTERCEPT_ALL_OBJS* -- when set, every library is patched and not just glibc
-and pthread. The syscall_intercept library and Capstone are excluded.
-
+_INTERCEPT_HOOK_CMDLINE_FILTER_ -- When set, the library checks the command
+line used to start the program. Hotpatching and syscall interception occur
+only if the last component of the command matches the string provided in this
+variable. This can also be queried by the user of the library:
 ```c
 int syscall_hook_in_process_allowed(void);
 ```
+
+_INTERCEPT_ALL_OBJS_ -- When set, all libraries are patched, not just _glibc_ and
+_pthread_. Note: The syscall\_intercept library and Capstone are never patched.
+
+*INTERCEPT_NO_TRAMPOLINE* -- When set, the trampoline is not used for jumping
+from the patched library to the syscall\_intercept library. In the RISC-V
+version of this library, the trampoline size is less than 30 bytes, requiring
+only one page of memory when allocated with `mmap()`. Consequently, setting
+this variable does not significantly reduce memory usage.
+
+*INTERCEPT_DEBUG_DUMP* -- Enables verbose output.
 
 # EXAMPLE #
 
@@ -192,7 +202,7 @@ init(void)
 }
 ```
 
-```sh
+```bash
 $ cc example.c -lsyscall_intercept -fpic -shared -o example.so
 $ LD_LIBRARY_PATH=. LD_PRELOAD=example.so ls
 ls: reading directory '.': Operation not supported

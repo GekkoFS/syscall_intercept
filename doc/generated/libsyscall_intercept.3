@@ -68,13 +68,14 @@ A non\-zero return value returned by the callback function is used to
 signal to the intercepting library that the specific system call was
 ignored by the user and the original syscall should be executed.
 A zero return value signals that the user takes over the system call.
-In this case, the result of the system call (the value stored in the RAX
+In this case, the result of the system call (the value stored in the A0
 register after the system call) can be set via the *result pointer.
 In order to use the library, the intercepting code is expected to be
 loaded using the LD_PRELOAD feature provided by the system loader.
 .PP
-All syscalls issued by libc are intercepted.
-Syscalls made by code outside libc are not intercepted.
+All syscalls issued by glibc are intercepted.
+Syscalls made by code outside glibc are not intercepted by default (see
+INTERCEPT_ALL_OBJS below).
 In order to be able to issue syscalls that are not intercepted, a
 convenience function is provided by the library:
 .IP
@@ -82,16 +83,36 @@ convenience function is provided by the library:
 struct wrapper_ret syscall_no_intercept(long syscall_number, ...);
 .EE
 .PP
+The struct \f[CR]wrapper_ret\f[R] is part of the RISC\-V version of this
+library\[cq]s API:
+.IP
+.EX
+struct wrapper_ret {
+    int64_t a0;
+    int64_t a1;
+}
+.EE
+.PP
+If A1 is modified by a syscall, this struct will preserve both return
+values (A0 and A1).
+.PP
 In addition to hooking syscalls before they would be called, the API has
-one special hook point that is executed after thread creation, right
-after a clone syscall creating a thread returns in a child thread:
+two special hook points that are executed after thread creation, right
+after a clone syscall creating a thread returns:
 .IP
 .EX
 void (*intercept_hook_point_clone_child)(void);
+void (*intercept_hook_point_clone_parent)(long pid);
 .EE
 .PP
-Using \f[CR]intercept_hook_point_clone_child\f[R], one can be notified
-of thread creations.
+The parameter \f[CR]long pid\f[R] for the parent\[cq]s hook is a PID of
+a newly created child thread.
+.PD 0
+.P
+.PD
+Using \f[CR]intercept_hook_point_clone_child\f[R] or
+\f[CR]intercept_hook_point_clone_parent\f[R], one can be notified of
+thread creations.
 .PP
 To make it easy to detect syscall return values indicating errors, one
 can use the syscall_error_code function:
@@ -101,7 +122,7 @@ int syscall_error_code(long result);
 .EE
 .PP
 When passed a return value from syscall_no_intercept, this function can
-translate it to an error code equivalent to a libc error code:
+translate it to an error code equivalent to a glibc error code:
 .IP
 .EX
 struct wrapper_ret ret;
@@ -111,38 +132,43 @@ if (syscall_error_code(fd) != 0)
     fprintf(stderr, strerror(syscall_error_code(fd)));
 .EE
 .SH ENVIRONMENT VARIABLES
-Three environment variables control the operation of the library:
+Several environment variables control the operation of the library:
 .PP
-\f[I]INTERCEPT_LOG\f[R] \[en] when set, the library logs each syscall
-intercepted to a file.
-If it ends with \[lq]\-\[rq] the path of the file is formed by appending
-a process id to the value provided in the environment variable.
-E.g.: initializing the library in a process with pid 123 when the
-INTERCEPT_LOG is set to \[lq]intercept.log\-\[rq] will result in a log
-file named intercept.log\-123.
+\f[I]INTERCEPT_LOG\f[R] \[en] When set, the library logs each
+intercepted syscall to a file.
+If the variable ends with \[lq]\-\[rq], the filename is suffixed with
+the process ID.
+E.g., for a process with PID 123 and INTERCEPT_LOG set to
+\[lq]intercept.log\-\[rq], the resulting log file would be
+\[lq]intercept.log\-123\[rq].
 .PP
-\f[I]INTERCEPT_LOG_TRUNC\f[R] \[en] when set to 0, the log file from
-INTERCEPT_LOG is not truncated.
+\f[I]INTERCEPT_LOG_TRUNC\f[R] \[en] When set to 0, the log file
+specified by INTERCEPT_LOG is not truncated.
 .PP
-\f[I]INTERCEPT_HOOK_CMDLINE_FILTER\f[R] \[en] when set, the library
-checks the contents of the /proc/self/cmdline file.
-Hotpatching, and syscall intercepting is only done, if the last
-component of the first zero terminated string in /proc/self/cmdline
-matches the string provided in the environment variable.
+\f[I]INTERCEPT_HOOK_CMDLINE_FILTER\f[R] \[en] When set, the library
+checks the command line used to start the program.
+Hotpatching and syscall interception occur only if the last component of
+the command matches the string provided in this variable.
 This can also be queried by the user of the library:
-.PP
-\f[I]INTERCEPT_NO_TRAMPOLINE\f[R] \[en] when set, trampoline is not used
-to jump from the patched library to the syscall_intercept library.
-.PP
-\f[I]INTERCEPT_DEBUG_DUMP\f[R] \[en] when set, the output is verbose.
-.PP
-\f[I]INTERCEPT_ALL_OBJS\f[R] \[en] when set, every library is patched
-and not just glibc and pthread.
-The syscall_intercept library and Capstone are excluded.
 .IP
 .EX
 int syscall_hook_in_process_allowed(void);
 .EE
+.PP
+\f[I]INTERCEPT_ALL_OBJS\f[R] \[en] When set, all libraries are patched,
+not just \f[I]glibc\f[R] and \f[I]pthread\f[R].
+Note: The syscall_intercept library and Capstone are never patched.
+.PP
+\f[I]INTERCEPT_NO_TRAMPOLINE\f[R] \[en] When set, the trampoline is not
+used for jumping from the patched library to the syscall_intercept
+library.
+In the RISC\-V version of this library, the trampoline size is less than
+30 bytes, requiring only one page of memory when allocated with
+\f[CR]mmap()\f[R].
+Consequently, setting this variable does not significantly reduce memory
+usage.
+.PP
+\f[I]INTERCEPT_DEBUG_DUMP\f[R] \[en] Enables verbose output.
 .SH EXAMPLE
 .IP
 .EX
