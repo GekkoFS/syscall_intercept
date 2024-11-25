@@ -1,81 +1,81 @@
-# syscall_intercept
+# syscall\_intercept
 
-[![Build Status](https://travis-ci.org/pmem/syscall_intercept.svg)](https://travis-ci.org/pmem/syscall_intercept)
-[![Coverage Status](https://codecov.io/github/pmem/syscall_intercept/coverage.svg)](https://codecov.io/gh/pmem/syscall_intercept)
-[![Coverity Scan Build Status](https://scan.coverity.com/projects/12890/badge.svg)](https://scan.coverity.com/projects/syscall_intercept)
+A userspace library for intercepting syscalls on the RISC-V architecture.
 
-Userspace syscall intercepting library.
 
-# Dependencies #
+# Dependencies
 
-## Runtime dependencies ##
+### Build dependencies:
 
- * libcapstone -- the disassembly engine used under the hood
+ * RISC-V toolchain -- tested with recent versions of GCC and Clang
+ * CMake ≥ v3.13 -- build system
+ * Perl -- required for code style checks
+ * Pandoc -- required to generate the manual page
 
-## Build dependencies ##
+### Runtime dependencies:
 
-# Local build dependencies #
+ * Capstone ≥ v5 (v6 recommended) -- the disassembly engine used under the hood
 
- * C99 toolchain -- tested with recent versions of GCC and clang
- * cmake
- * perl -- for checking coding style
- * pandoc -- for generating the man page
 
-### Travis CI build dependencies ###
+# How to Build
 
-The travis builds use some scripts to generate a docker images, in which syscall_intercept is built/tested.
-These docker images are pushed to Dockerhub, to be reused in later travis builds.
-The scripts expect four environment variables to be set in the travis environment:
- * DOCKERHUB_REPO - where to store the docker images used for building
-    e.g. in order to refer to a Dockerhub repository at https://hub.docker.com/r/pmem/syscall_intercept, this variable
-    should contain the string "pmem/syscall_intercept"
- * DOCKERHUB_USER - used for logging into Dockerhub
- * DOCKERHUB_PASSWORD - used for logging into Dockerhub
- * GITHUB_REPO - where the repository is available on github (e.g. "pmem/syscall_intercept" )
+The RISC-V toolchain can be built from the [RISC-V GNU Toolchain](https://github.com/riscv-collab/riscv-gnu-toolchain).  
+Capstone can be installed from [Capstone Engine](https://www.capstone-engine.org/documentation.html).
 
-### How to build ###
-
-Building libsyscall_intercept requires cmake.
-Example:
-```sh
-cmake path_to_syscall_intercept -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
+Building libsyscall\_intercept requires CMake:
+```bash
+cmake path_to_syscall_intercept -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
 make
 ```
-alternatively:
-```sh
+Alternatively, use the CMake GUI::
+```bash
 ccmake path_to_syscall_intercept
 make
 ```
 
-There is an install target. For now, all it does, is cp.
-```sh
+There is an install target. For now, all it does is `cp`:
+```bash
 make install
 ```
 
 Coming soon:
-```sh
+```bash
 make test
 ```
 
-# Synopsis #
 
+# Synopsis
+
+#### API
 ```c
 #include <libsyscall_intercept_hook_point.h>
+
+int (*intercept_hook_point)(long syscall_number,
+                            long arg0, long arg1,
+                            long arg2, long arg3,
+                            long arg4, long arg5,
+                            long *result);
+void (*intercept_hook_point_clone_child)(void);
+void (*intercept_hook_point_clone_parent)(long pid);
+struct wrapper_ret syscall_no_intercept(long syscall_number, ...);
+int syscall_error_code(long result);
+int syscall_hook_in_process_allowed(void);
 ```
-```sh
-cc -lsyscall_intercept -fpic -shared source.c -o preloadlib.so
-
-LD_PRELOAD=preloadlib.so ./application
+#### Compile
+```bash
+$ cc -lsyscall_intercept -fpic -shared source.c -o preloadlib.so
+```
+#### Run with `LD_PRELOAD`
+```bash
+$ LD_PRELOAD=preloadlib.so ./application
 ```
 
-##### Description: #####
 
-The system call intercepting library provides a low-level interface
-for hooking Linux system calls in user space. This is achieved
-by hotpatching the machine code of the standard C library in the
-memory of a process. The user of this library can provide the
-functionality of almost any syscall in user space, using the very
-simple API specified in the libsyscall_intercept\_hook\_point.h header file:
+# Description
+
+The syscall-intercepting library provides a low-level interface for hooking Linux system calls in user space. This is achieved by hotpatching the machine code of the standard C library (_glibc_) in the memory of a process. Using this library, almost any syscall can be intercepted in user space via the API specified in _libsyscall_intercept_hook_point.h_.
+
+#### Using `intercept_hook_point()`
 ```c
 int (*intercept_hook_point)(long syscall_number,
 			long arg0, long arg1,
@@ -83,50 +83,50 @@ int (*intercept_hook_point)(long syscall_number,
 			long arg4, long arg5,
 			long *result);
 ```
+* To enable syscall interception, assign a callback function to the `intercept_hook_point` variable.
+* A **non-zero return value** from the callback indicates that the syscall should proceed as normal, it will be passed to the kernel.
+* A **zero return value** indicates that the user takes over the syscall with the result value stored via the `*result` parameter.
 
-The user of the library shall assign to the variable called
-intercept_hook_point a pointer to the address of a callback function.
-A non-zero return value returned by the callback function is used
-to signal to the intercepting library that the specific system
-call was ignored by the user and the original syscall should be
-executed. A zero return value signals that the user takes over the
-system call. In this case, the result of the system call
-(the value stored in the RAX register after the system call)
-can be set via the *result pointer. In order to use the library,
-the intercepting code is expected to be loaded using the
-LD_PRELOAD feature provided by the system loader.
-
-All syscalls issued by libc are intercepted. Syscalls made
-by code outside libc are not intercepted. In order to
-be able to issue syscalls that are not intercepted, a
-convenience function is provided by the library:
+#### Clone hooks
+In addition to hooking syscalls, the user can be notified of thread creations with post-clone hooks. These hooks are executed immediately after a thread is created with a `clone` syscall:
 ```c
-long syscall_no_intercept(long syscall_number, ...);
+void (*intercept_hook_point_clone_child)(void);
+void (*intercept_hook_point_clone_parent)(long pid);
 ```
 
-Three environment variables control the operation of the library:
+#### Bypassing interception
+The library provides this function to execute syscalls that bypass the interception mechanism:
+```c
+struct wrapper_ret syscall_no_intercept(long syscall_number, ...);
+```
 
-*INTERCEPT_LOG* -- when set, the library logs each syscall intercepted
-to a file. If it ends with "-" the path of the file is formed by appending
-a process id to the value provided in the environment variable.
-E.g.: initializing the library in a process with pid 123 when the
-INTERCEPT_LOG is set to "intercept.log-" will result in a log file named
-intercept.log-123.
+#### Detecting error codes
+With the `syscall_error_code()` function it's easy to detect syscall return values indicating errors:
+```c
+int syscall_error_code(long result);
+```
 
-*INTERCEPT_LOG_TRUNC -- when set to 0, the log file from INTERCEPT_LOG
-is not truncated.
-
-*INTERCEPT_HOOK_CMDLINE_FILTER* -- when set, the library
-checks the command line used to start the program.
-Hotpatching, and syscall intercepting is only done, if the
-last component of the command used to start the program
-is the same as the string provided in the environment variable.
-This can also be queried by the user of the library:
+#### Checking interception status
+This function is used to query if interception is disabled with the `INTERCEPT_HOOK_CMDLINE_FILTER` [environment variable](#environment-variables).
 ```c
 int syscall_hook_in_process_allowed(void);
 ```
 
-##### Example: #####
+# Environment Variables
+
+_INTERCEPT_LOG_ -- When set, the library logs each intercepted syscall to a file. If the variable ends with "-", the filename is suffixed with the process ID. E.g., for a process with PID 123 and INTERCEPT\_LOG set to "intercept.log-", the resulting log file would be "intercept.log-123".
+
+_INTERCEPT_LOG_TRUNC_ -- When set to 0, the log file specified by INTERCEPT\_LOG is not truncated.
+
+_INTERCEPT_HOOK_CMDLINE_FILTER_ -- When set, the library checks the command line used to start the program. Hotpatching and syscall interception occur only if the last component of the command matches the string provided in this variable. The library also provides a [function](#checking-interception-status) for querying this state.
+
+_INTERCEPT_ALL_OBJS_ -- When set, all libraries are patched, not just _glibc_ and _pthread_. Note: The syscall\_intercept library and Capstone are never patched.
+
+*INTERCEPT_NO_TRAMPOLINE* -- When set, the trampoline is not used for jumping from the patched library to the syscall\_intercept library. In the RISC-V version of this library, the trampoline size is less than 30 bytes, requiring only one page of memory when allocated with `mmap()`. Consequently, setting this variable does not significantly reduce memory usage.
+
+*INTERCEPT_DEBUG_DUMP* -- Enables verbose output.
+
+# Example
 
 ```c
 #include <libsyscall_intercept_hook_point.h>
@@ -168,126 +168,88 @@ init(void)
 	intercept_hook_point = hook;
 }
 ```
-
-```sh
+Compile and run:
+```bash
 $ cc example.c -lsyscall_intercept -fpic -shared -o example.so
 $ LD_LIBRARY_PATH=. LD_PRELOAD=example.so ls
 ls: reading directory '.': Operation not supported
 ```
 
-# Under the hood: #
 
-##### Assumptions: #####
-In order to handle syscalls in user space, the library relies
-on the following assumptions:
+# Functional Changes
+The key differences in functionality between the RISC-V and x86\_64 versions of this library relevant to the user:
+1. `syscall_no_intercept()` returns a struct containing both `A0` and `A1`, the two return values of a syscall, instead of returning only the primary value (`RAX`) on x86_64.
+2. All threads (clones) are intercepted, and results are logged. On x86\_64, the result of thread creation is not logged for threads with separate stack spaces.
+3. Post-clone hooks, `intercept_hook_point_clone_child()` and `intercept_hook_point_clone_parent()`, are triggered by every thread creation, not just by the threads with separate stack spaces.
 
-- Each syscall made by the applicaton is issued via libc
-- No other facility attempts to hotpatch libc in the same process
-- The libc implementation is already loaded in the processes
-memory space when the intercepting library is being initialized
-- The machine code in the libc implementation is suitable
-for the methods listed in this section
-- For some more basic assumptions, see the section on limitations.
 
-##### Disassembly: #####
-The library disassembles the text segment of the libc loaded
-into the memory space of the process it is initialized in. It
-locates all syscall instructions, and replaces each of them
-with a jump to a unique address. Since the syscall instruction
-of the x86_64 ISA occupies only two bytes, the method involves
-locating other bytes close to the syscall suitable for overwriting.
-The destination of the jump (unique for each syscall) is a
-small routine, which accomplishes the following tasks:
+# Under the Hood
 
-1. Optionally executes any instruction that originally
-preceded the syscall instruction, and was overwritten to
-make space for the jump instruction
-2. Saves the current state of all registers to the stack
-3. Translates the arguments (in the registers) from
-the Linux x86_64 syscall calling convention to the C ABI's
-calling convention used on x86_64
-4. Calls a function written in C (which in turn calls
-the callback supplied by the library user)
-5. Loads the values from the stack back into the registers
-6. Jumps back to libc, to the instruction following the
-overwritten part
+### Assumptions:
 
-##### In action: #####
+To handle syscalls in user space, the library relies on the following assumptions:
 
-*Simple hotpatching:*
-Replace a mov and a syscall instruction with a jmp instruction
+* All syscalls are issued via _glibc_.
+* No other facility hotpatches _glibc_.
+* _Glibc_ is loaded before library initialization.
+* The _glibc_ machine code is suitable for patching methods used.
+* For some more basic assumptions, see [limitations](#limitations).
+
+### Disassembly:
+
+The library disassembles the text segment of the _glibc_ loaded into the memory space of the process in which it is initialized. It locates all syscall instructions and replaces each of them with a jump. This is in common with both x86\_64 and RISC-V, but RISC-V differs in how patching is [implemented](#patching-risc-v).
+
+### Patching RISC-V
+
+Reasons to change implementation logic:
+1. The relative jump instruction (`jal`) has a ±1 MB reach which is not enough to jump out of _glibc_ like x86's `jmp` with ±2 GB reach.
+2. Instructions are naturally better aligned so `nop`s are rarely used in _glibc_ removing the possibility of having the nop trampolines.
+
+Jumping out of _glibc_ is only doable with an indirect jump, `auipc` + `jalr` = ±2 GB reach. That requires much more patching space than x86\_64 `jmp` instruction with its 5 bytes for a 2 GB jump or 2 bytes for a 127 B jump (used in combination with the nop trampoline). RISC-V needs 16 B (when RVC is supported) to perform a 2 GB jump. Not all syscalls are surrounded by that many relocatable instructions. To be able to patch all the syscalls, three different patch types are created based on the space available for patching:
+1. _Gateway_ -- syscall is surrounded by many relocatable instructions which makes it suitable to create a ±2 GB jump. Gateways are the cornerstone of the library because smaller patch types jump here to get "forwarded" to the syscall\_intercept library.
+2. _Middle_ -- syscall is surrounded by enough relocatable instructions to replace them with the store instruction that stores `ra` on the stack. Jumps using `jal ra, GW_addr` to gateway, from where it jumps to syscall\_intercept library.
+3. _Small_ -- not enough space to store the register used by `jal` on the stack. _Small_ type relies on static analysis during the disassembly phase to store the syscall number (`A7` value) in the patch' struct. Like the _middle_ type, the _small_ patch jumps to the gateway using `jal` (`jal a7, GW_addr`).
+
+The final destination for all patches is the same assembly routine (`asm_entry_point`) inside the syscall\_intercept library where C functions get called like in the x86\_64 counterpart library.
+
+### In action:
+
+Hotpatching the type _gateway_:
 ```
-Before:                         After:
+Before:                           After:
 
-db2a0 <__open>:                 db2b0 <__open>:
-db2aa: mov $2, %eax           /-db2aa: jmp e0000
-db2af: syscall                |
-db2b1: cmp $-4095, %rax       | db2b1: cmp $-4095, %rax ---\
-db2b7: jae db2ea              | db2b7: jae db2ea           |
-db2b9: retq                   | db2b9: retq                |
-                              | ...                        |
-                              | ...                        |
-                              \_...                        |
-                                e0000: mov $2, $eax        |
-                                ...                        |
-                                e0100: call implementation /
-                                ...                       /
-                                e0200: jmp db2aa ________/
+b2d28 <__open>:                   b2d28 <__open>:
+...                               ...
+b2dac: ld      a1,8(sp)           b2dac: ld      a1,8(sp)
+b2dae: ld      a3,0(sp)           b2dae: addi    sp, sp, -48
+b2db0: mv      a2,s0              b2db0: sd      ra, 0(sp)
+b2db2: li      a7,56              b2db2: auipc   ra, offset
+b2db6: li      a0,-100            b2db6: jalr    ra, offset(ra)
+b2dba: ecall                      b2dba: ld      ra, 0(sp)
+b2dbe: lui     a4,0xfffff         b2dbc: addi    sp, sp, 48
+...                               b2dbe: lui     a4,0xfffff
+...                               ...
 ```
-*Hotpatching using a trampoline jump:*
-Replace a syscall instruction with a short jmp instruction,
-the destination of which is a regular jmp instruction.
-The reason to use this, is that a short jmp instruction
-consumes only two bytes, thus fits in the place of a syscall
-instruction. Sometimes the instructions directly preceding
-or following the syscall instruction can not be overwritten,
-leaving only the two bytes of the syscall instruction
-for patching.
-The hotpatching library looks for place for the trampoline jump
-in the padding found to the end of each routine. Since the start
-of all routines is aligned to 16 bytes, often there is a padding
-space between the end of a symbol, and the start of the next symbol.
-In the example below, this padding is filled with 7 byte long
-nop instruction (so the next symbol can start at the address 3f410).
+The destination of the _gateway_'s `jalr` is either directly the syscall\_intercept library (if `INTERCEPT_NO_TRAMPOLINE=1`) or a trampoline where an absolute jump is performed to the syscall\_intercept library.  
+The _gateway_ and _middle_ types are patched similarly. The difference is that the _middle_ uses `jal` instead of `auipc`/`jalr` and spares 4 bytes of patching space. Type _small_ is a bit less straightforward, check the [*documentation*](doc/RV_doc.md).
+
+
+# Limitations
+
+* Only supports GNU/Linux.
+* Tested only with _glibc_, compatibility with other libc implementations is unverified.
+* Syscall _rt_sigreturn_ is not intercepted as it's used by the kernel for signal handling.
+
+
+# Debugging
+
+Prevent interception of syscalls within the debugger by setting the `INTERCEPT_HOOK_CMDLINE_FILTER` variable described [*above*](#environment-variables):
 ```
-Before:                         After:
-
-3f3fe: mov %rdi, %rbx           3f3fe: mov %rdi, %rbx
-3f401: syscall                /-3f401: jmp 3f430
-3f403: jmp 3f415              | 3f403: jmp 3f415 ----------\
-3f407: retq                   | 3f407: retq                |
-                              \                            |
-3f408: nopl 0x0(%rax,%rax,1)  /-3f408: jmp e1000           |
-                              | ...                        |
-                              | ...                        |
-                              \_...                        |
-                                e1000: nop                 |
-                                ...                        |
-                                e1100: call implementation /
-                                ...                       /
-                                e1200: jmp 3f403 ________/
-
+INTERCEPT_HOOK_CMDLINE_FILTER=ls LD_PRELOAD=libsyscall_intercept.so gdb ls
 ```
 
-# Limitations: #
-* Only Linux is supported
-* Only x86\_64 is supported
-* Only tested with glibc, although perhaps it works
-with some other libc implementations as well
-* There are known issues with the following syscalls:
-  * clone
-  * rt_sigreturn
-
-# Debugging: #
-Besides logging, the most important factor during debugging is to make
-sure the syscalls in the debugger are not intercepted. To achieve this, use
-the INTERCEPT_HOOK_CMDLINE_FILTER variable described above.
-
+Alternatively, set `LD_PRELOAD` within the gdb session or configure it in a `.gdbinit` file:
 ```
-INTERCEPT_HOOK_CMDLINE_FILTER=ls \
-	LD_PRELOAD=libsyscall_intercept.so \
-	gdb ls
+set environment LD_PRELOAD libsyscall_intercept.so
 ```
 
-With this filtering, the intercepting library is not activated in the gdb
-process itself.
