@@ -213,9 +213,9 @@
 	.endm
 
 	/*
-	 * Before executing relocated instructions, use MV_STACK_TO_TLS to save
-	 * the return address and original ra from a patch.
-	 * MV_TLS_TO_STACK, just do the opposite after the execution is done.
+	 * Before executing the relocated instructions, use MV_STACK_TO_TLS to
+	 * save the return address and the original ra from a patch.
+	 * MV_TLS_TO_STACK just does the opposite after the execution is done.
 	 */
 	.macro MV_STACK_TO_TLS
 		sd	t0, UNUSED_OFF1(sp)
@@ -277,7 +277,7 @@
 	.endm
 
 
-	/* Patched instructions space */
+	/* Patched instruction space */
 	.global	asm_relocation_space
 	.hidden	asm_relocation_space
 
@@ -286,7 +286,7 @@
 	.hidden	asm_entry_point
 	.type	asm_entry_point, @function
 
-	/* The function that executes preceding/following patched instructions */
+	/* The function that executes the preceding/following patched instructions */
 	.local	exec_relocated_instructions
 	.type	exec_relocated_instructions, @function
 
@@ -352,9 +352,9 @@ asm_entry_point:
 	 * by detect_cur_patch_wrapper:                                      *
 	 * - ra will be (ab)used more for jumping back and forth between     *
 	 *   here and the patched instructions, and to call the C functions. *
-	 * - stack (sp) holds important adresses: the overwriten ra from     *
-	 *   glibc, the address to jump back to glibc, and the address of    *
-	 *   relocated instructions (the one that precedes ecall).           *
+	 * - the stack (sp) holds important adresses: the overwritten ra     *
+	 *   from glibc, the address to jump back to glibc, and the address  *
+	 *   of the relocated instructions (the one that precedes ecall).    *
 	 *********************************************************************/
 
 	// execute the instructions that precede the ecall in glibc
@@ -491,7 +491,7 @@ spinlock_aq:
 
 
 /*
- * Function: spinlock_aq(int *a0)
+ * Function: spinlock_rl(int *a0)
  * The parameter a0 holds the address of the lock to be utilized.
  */
 spinlock_rl:
@@ -501,7 +501,7 @@ spinlock_rl:
 #else
 	/*
 	 * Prior stores and loads must be completed before the subsequent store
-	 * (sw below). The fence.tso ensures that all prior loads are ordered
+	 * (sw below). fence.tso ensures that all prior loads are ordered
 	 * before any memory operation that follows, while all prior stores are
 	 * ordered only before successor stores (not loads). It functions
 	 * similarly to: fence r, rw + fence w, w.
@@ -522,11 +522,11 @@ detect_cur_patch_wrapper:
 	// place a7 in a callee-saved register to preserve it after the call
 	mv	s1, a7
 
-	/* The table shows what the clobbered registers hold for each patch type
+	/* The table shows where important values are stored by patch types
 	 *********************************************************************
 	 *      *    return address    * original ra *   a7 (ecall) value    *
 	 *********************************************************************
-	 * GW   *  ra/UNUSED_OFF1(sp)  *    0(sp)    *    a7 (unchanged)     *
+	 * GW   *   UNUSED_OFF1(sp)    *    0(sp)    *    a7 (unchanged)     *
 	 * MID  *        0(sp)         *    8(sp)    *    a7 (unchanged)     *
 	 * SML  *         a7           *    0(sp)    *  patch->syscall_num   *
 	 *********************************************************************/
@@ -628,7 +628,7 @@ intercept_routine_wrapper:
 	/*
 	 * Execute spinlock_aq before MV_STACK_TO_SHR because multiple threads can
 	 * create new threads, which may lead to contention in the SHR .bss. Being
-	 * outside of LOAD_CONTEXT_EPILOGUE and STORE_CONTEXT_PROLOGUE force the
+	 * outside of LOAD_CONTEXT_EPILOGUE and STORE_CONTEXT_PROLOGUE forces the
 	 * use of extra space available on the stack to store and load ra and a0.
 	 */
 	sd	ra, UNUSED_OFF1(sp)
@@ -687,7 +687,7 @@ lock_SHR:
 	.4byte	0
 
 
-	/* .bss is shared space for multithreading in case of CLONE_SETTLS */
+	/* .bss is the shared space for multithreading in case of CLONE_SETTLS */
 	.align	3
 	.section .bss
 	.local	asm_ra_orig_shr

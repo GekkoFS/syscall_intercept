@@ -1,6 +1,6 @@
 # syscall\_intercept
 
-A userspace library for intercepting syscalls on the RISC-V architecture.
+A user space library for intercepting syscalls on the RISC-V architecture.
 
 
 # Dependencies
@@ -27,7 +27,7 @@ Building libsyscall\_intercept requires CMake:
 cmake path_to_syscall_intercept -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
 make
 ```
-Alternatively, use the CMake GUI::
+Alternatively, use the CMake CUI (GUI):
 ```bash
 ccmake path_to_syscall_intercept
 make
@@ -78,13 +78,13 @@ The syscall-intercepting library provides a low-level interface for hooking Linu
 #### Using `intercept_hook_point()`
 ```c
 int (*intercept_hook_point)(long syscall_number,
-			long arg0, long arg1,
-			long arg2, long arg3,
-			long arg4, long arg5,
-			long *result);
+                            long arg0, long arg1,
+                            long arg2, long arg3,
+                            long arg4, long arg5,
+                            long *result);
 ```
-* To enable syscall interception, assign a callback function to the `intercept_hook_point` variable.
-* A **non-zero return value** from the callback indicates that the syscall should proceed as normal, it will be passed to the kernel.
+* To enable syscall interception, assign a callback function to `intercept_hook_point`.
+* A **non-zero return value** from the callback function indicates that the syscall should proceed as normal and will be passed to the kernel.
 * A **zero return value** indicates that the user takes over the syscall with the result value stored via the `*result` parameter.
 
 #### Clone hooks
@@ -178,7 +178,7 @@ ls: reading directory '.': Operation not supported
 
 # Functional Changes
 The key differences in functionality between the RISC-V and x86\_64 versions of this library relevant to the user:
-1. `syscall_no_intercept()` returns a struct containing both `A0` and `A1`, the two return values of a syscall, instead of returning only the primary value (`RAX`) on x86_64.
+1. `syscall_no_intercept()` returns a struct containing both `A0` and `A1`, the two return values of a syscall, instead of returning only the primary value (`RAX`) on x86\_64.
 2. All threads (clones) are intercepted, and results are logged. On x86\_64, the result of thread creation is not logged for threads with separate stack spaces.
 3. Post-clone hooks, `intercept_hook_point_clone_child()` and `intercept_hook_point_clone_parent()`, are triggered by every thread creation, not just by the threads with separate stack spaces.
 
@@ -197,7 +197,7 @@ To handle syscalls in user space, the library relies on the following assumption
 
 ### Disassembly:
 
-The library disassembles the text segment of the _glibc_ loaded into the memory space of the process in which it is initialized. It locates all syscall instructions and replaces each of them with a jump. This is in common with both x86\_64 and RISC-V, but RISC-V differs in how patching is [implemented](#patching-risc-v).
+The library disassembles the text segment of _glibc_ loaded into the memory space of the process in which it is initialized. It locates all syscall instructions and replaces each of them with a jump. This is in common with both x86\_64 and RISC-V, but RISC-V differs in how patching is [implemented](#patching-risc-v).
 
 ### Patching RISC-V
 
@@ -206,44 +206,44 @@ Reasons to change implementation logic:
 2. Instructions are naturally better aligned so `nop`s are rarely used in _glibc_ removing the possibility of having the nop trampolines.
 
 Jumping out of _glibc_ is only doable with an indirect jump, `auipc` + `jalr` = ±2 GB reach. That requires much more patching space than x86\_64 `jmp` instruction with its 5 bytes for a 2 GB jump or 2 bytes for a 127 B jump (used in combination with the nop trampoline). RISC-V needs 16 B (when RVC is supported) to perform a 2 GB jump. Not all syscalls are surrounded by that many relocatable instructions. To be able to patch all the syscalls, three different patch types are created based on the space available for patching:
-1. _Gateway_ -- syscall is surrounded by many relocatable instructions which makes it suitable to create a ±2 GB jump. Gateways are the cornerstone of the library because smaller patch types jump here to get "forwarded" to the syscall\_intercept library.
-2. _Middle_ -- syscall is surrounded by enough relocatable instructions to replace them with the store instruction that stores `ra` on the stack. Jumps using `jal ra, GW_addr` to gateway, from where it jumps to syscall\_intercept library.
-3. _Small_ -- not enough space to store the register used by `jal` on the stack. _Small_ type relies on static analysis during the disassembly phase to store the syscall number (`A7` value) in the patch' struct. Like the _middle_ type, the _small_ patch jumps to the gateway using `jal` (`jal a7, GW_addr`).
+1. _Gateway_ -- the syscall is surrounded by many relocatable instructions which makes it suitable to create a ±2 GB jump. _Gateways_ are the cornerstone of the library because smaller patch types jump here to get "forwarded" to the syscall\_intercept library.
+2. _Middle_ -- the syscall is surrounded by enough relocatable instructions to replace them with the store instruction that stores `ra` on the stack. Jumps using `jal ra, GW_addr` to the _gateway_, from where it jumps to the syscall\_intercept library.
+3. _Small_ -- not enough space to store the register used by `jal` on the stack. The _small_ type relies on static analysis during the disassembly phase to store the syscall number (`A7` value) in the patch's struct. Like the _middle_ type, the _small_ patch jumps to the _gateway_ using `jal` (`jal a7, GW_addr`).
 
 The final destination for all patches is the same assembly routine (`asm_entry_point`) inside the syscall\_intercept library where C functions get called like in the x86\_64 counterpart library.
 
 ### In action:
 
-Hotpatching the type _gateway_:
+Hotpatching the _gateway_ type:
 ```
 Before:                           After:
 
 b2d28 <__open>:                   b2d28 <__open>:
 ...                               ...
 b2dac: ld      a1,8(sp)           b2dac: ld      a1,8(sp)
-b2dae: ld      a3,0(sp)           b2dae: addi    sp, sp, -48
+b2dae: ld      a3,0(sp)           b2dae: addi    sp, sp, -48    # GW start
 b2db0: mv      a2,s0              b2db0: sd      ra, 0(sp)
 b2db2: li      a7,56              b2db2: auipc   ra, offset
 b2db6: li      a0,-100            b2db6: jalr    ra, offset(ra)
 b2dba: ecall                      b2dba: ld      ra, 0(sp)
-b2dbe: lui     a4,0xfffff         b2dbc: addi    sp, sp, 48
+b2dbe: lui     a4,0xfffff         b2dbc: addi    sp, sp, 48     # GW end
 ...                               b2dbe: lui     a4,0xfffff
 ...                               ...
 ```
 The destination of the _gateway_'s `jalr` is either directly the syscall\_intercept library (if `INTERCEPT_NO_TRAMPOLINE=1`) or a trampoline where an absolute jump is performed to the syscall\_intercept library.  
-The _gateway_ and _middle_ types are patched similarly. The difference is that the _middle_ uses `jal` instead of `auipc`/`jalr` and spares 4 bytes of patching space. Type _small_ is a bit less straightforward, check the [*documentation*](doc/RV_doc.md).
+The _gateway_ and _middle_ types are patched similarly. The difference is that the _middle_ type uses `jal` instead of `auipc`/`jalr` and spares 4 bytes of patching space. Type _small_ is a bit less straightforward, check the [documentation](doc/RV_doc.md).
 
 
 # Limitations
 
 * Only supports GNU/Linux.
 * Tested only with _glibc_, compatibility with other libc implementations is unverified.
-* Syscall _rt_sigreturn_ is not intercepted as it's used by the kernel for signal handling.
+* Syscall _rt\_sigreturn_ is not intercepted as it's used by the kernel for signal handling.
 
 
 # Debugging
 
-Prevent interception of syscalls within the debugger by setting the `INTERCEPT_HOOK_CMDLINE_FILTER` variable described [*above*](#environment-variables):
+Prevent interception of syscalls within the debugger by setting the `INTERCEPT_HOOK_CMDLINE_FILTER` variable described [above](#environment-variables):
 ```
 INTERCEPT_HOOK_CMDLINE_FILTER=ls LD_PRELOAD=libsyscall_intercept.so gdb ls
 ```
