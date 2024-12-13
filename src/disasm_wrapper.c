@@ -239,7 +239,6 @@ check_jump(struct intercept_disasm_result *result, struct cs_insn *insn,
 		result->is_abs_jump = true;
 	} else if (ops[op_c - 1].type == RISCV_OP_IMM) {
 		result->has_ip_relative_opr = true;
-		result->rip_disp = ops[op_c - 1].imm;
 		result->rip_ref_addr = code + ops[op_c - 1].imm;
 	}
 }

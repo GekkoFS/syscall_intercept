@@ -66,7 +66,6 @@ struct intercept_disasm_result {
 	bool has_ip_relative_opr;
 	bool is_abs_jump;
 
-	int32_t rip_disp;
 	const unsigned char *rip_ref_addr;
 
 	int16_t a7_set;
