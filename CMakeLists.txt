@@ -120,7 +120,7 @@ function(set_isa_extensions)
 	if(NOT comp_result EQUAL 0)
 		string(FIND "${isa_extensions}" "_" underscore_idx)
 		string(SUBSTRING "${isa_extensions}" 0 ${underscore_idx} prefix)
-		string(SUBSTRING "${isa_extensions}" ${underscore_idx} -1 suffix)
+		# string(SUBSTRING "${isa_extensions}" ${underscore_idx} -1 suffix)
 		string(REGEX REPLACE "[su]" "" prefix "${prefix}")
 		set(isa_extensions "${prefix}${suffix}")
 
