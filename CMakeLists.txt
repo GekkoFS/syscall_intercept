@@ -202,9 +202,10 @@ target_link_libraries(syscall_intercept_shared
 	PRIVATE ${CMAKE_DL_LIBS}
 	"-Wl,--push-state,${CAPSTONE_LINK_MODE} -lcapstone -Wl,--pop-state"
 	"-Wl,--version-script=${CMAKE_SOURCE_DIR}/version.map")
-
+ 
+string(REPLACE ";" " " sanitized_capstone_CFLAGS "${capstone_CFLAGS}")
 target_link_libraries(syscall_intercept_static
-	INTERFACE ${CMAKE_DL_LIBS} ${capstone_LIBRARIES})
+	INTERFACE ${CMAKE_DL_LIBS} ${sanitized_capstone_LIBRARIES})
 
 set_target_properties(syscall_intercept_shared
 	PROPERTIES VERSION ${SYSCALL_INTERCEPT_VERSION}
