@@ -53,6 +53,7 @@
 #include <sys/mman.h>
 #include <stdarg.h>
 #include <sys/auxv.h>
+#include <linux/sched.h>
 
 #include "intercept.h"
 #include "intercept_log.h"
