@@ -93,9 +93,23 @@ int (*intercept_hook_point)(long syscall_number,
 			long *result)
 	__attribute__((visibility("default")));
 
-void (*intercept_hook_point_clone_child)(void)
+void (*intercept_hook_point_clone_child)(
+			unsigned long flags, void *child_stack,
+			int *ptid, int *ctid,
+			long newtls)
 	__attribute__((visibility("default")));
-void (*intercept_hook_point_clone_parent)(long)
+
+void (*intercept_hook_point_clone_parent)(
+			unsigned long flags, void *child_stack,
+			int *ptid, int *ctid,
+			long newtls, long returned_pid)
+	__attribute__((visibility("default")));
+
+void (*intercept_hook_point_post_kernel)(long syscall_number,
+			long arg0, long arg1,
+			long arg2, long arg3,
+			long arg4, long arg5,
+			long result)
 	__attribute__((visibility("default")));
 
 bool debug_dumps_on;
@@ -686,14 +700,26 @@ intercept_post_clone_log_syscall(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
  * and a new stack pointer is used in the child thread.
  */
 void
-intercept_routine_post_clone(int64_t a0)
+intercept_routine_post_clone(struct syscall_desc desc, int64_t a0)
 {
 	if (a0 == 0) {
 		if (intercept_hook_point_clone_child != NULL)
-			intercept_hook_point_clone_child();
+			intercept_hook_point_clone_child(
+					(unsigned long)desc.args[0],
+					(void *)desc.args[1],
+					(int *)desc.args[2],
+					(int *)desc.args[3],
+					desc.args[4]);
 	} else {
 		if (intercept_hook_point_clone_parent != NULL)
-			intercept_hook_point_clone_parent(a0);
+			intercept_hook_point_clone_parent(
+					(unsigned long)desc.args[0],
+					(void *)desc.args[1],
+					(int *)desc.args[2],
+					(int *)desc.args[3],
+					desc.args[4],
+					a0);
+
 	}
 }
 
@@ -813,11 +839,27 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		 * after the clone syscall (syscall_no_intercept).
 		 */
 		if (desc.nr == SYS_clone)
-			intercept_routine_post_clone(result.a0);
+			intercept_routine_post_clone(desc, result.a0);
 #ifdef SYS_clone3
 		else if (desc.nr == SYS_clone3)
-			intercept_routine_post_clone(result.a0);
+			intercept_routine_post_clone(desc, result.a0);
 #endif
+
+
+		/*
+			* some users might want to execute code after a syscall has
+			* been forwarded to the kernel (for example, to check its
+			* return value).
+			*/
+		if (intercept_hook_point_post_kernel != NULL)
+			intercept_hook_point_post_kernel(desc.nr,
+					desc.args[0],
+					desc.args[1],
+					desc.args[2],
+					desc.args[3],
+					desc.args[4],
+					desc.args[5],
+					result.a0);
 	}
 
 	intercept_log_syscall(patch, &desc, KNOWN, result.a0);
