@@ -131,17 +131,6 @@ function(set_isa_extensions)
 			RESULT_VARIABLE comp_result
 		)
 	endif()
-
-	# If compilation test succeeded, add those extensions to compiling process
-	if(comp_result EQUAL 0)
-		message(STATUS "Detected ISA extensions: ${isa_extensions}")
-		target_compile_options(syscall_intercept_base_c
-					PUBLIC "-march=${isa_extensions}")
-		target_compile_options(syscall_intercept_base_asm
-					PUBLIC "-march=${isa_extensions}")
-		target_compile_options(syscall_intercept_base_clf
-					PUBLIC "-march=${isa_extensions}")
-	endif()
 endfunction()
 
 set_isa_extensions()
@@ -202,7 +191,7 @@ target_link_libraries(syscall_intercept_shared
 	PRIVATE ${CMAKE_DL_LIBS}
 	"-Wl,--push-state,${CAPSTONE_LINK_MODE} -lcapstone -Wl,--pop-state"
 	"-Wl,--version-script=${CMAKE_SOURCE_DIR}/version.map")
- 
+
 string(REPLACE ";" " " sanitized_capstone_CFLAGS "${capstone_CFLAGS}")
 target_link_libraries(syscall_intercept_static
 	INTERFACE ${CMAKE_DL_LIBS} ${sanitized_capstone_LIBRARIES})
