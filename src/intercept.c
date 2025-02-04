@@ -700,8 +700,20 @@ intercept_post_clone_log_syscall(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
  * and a new stack pointer is used in the child thread.
  */
 void
-intercept_routine_post_clone(struct syscall_desc desc, int64_t a0)
+intercept_routine_post_clone(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
+			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
 {
+	(void) a6;
+	struct syscall_desc desc = {
+		.nr = (int)a7, /* ignore higher 32 bits */
+		.args[0] = a0,
+		.args[1] = a1,
+		.args[2] = a2,
+		.args[3] = a3,
+		.args[4] = a4,
+		.args[5] = a5
+	};
+
 	if (a0 == 0) {
 		if (intercept_hook_point_clone_child != NULL)
 			intercept_hook_point_clone_child(
@@ -839,10 +851,10 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		 * after the clone syscall (syscall_no_intercept).
 		 */
 		if (desc.nr == SYS_clone)
-			intercept_routine_post_clone(desc, result.a0);
+			intercept_routine_post_clone(a0, a1, a2, a3, a4, a5, a6, a7);
 #ifdef SYS_clone3
 		else if (desc.nr == SYS_clone3)
-			intercept_routine_post_clone(desc, result.a0);
+			intercept_routine_post_clone(a0, a1, a2, a3, a4, a5, a6, a7);
 #endif
 
 
