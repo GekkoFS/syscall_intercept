@@ -85,8 +85,8 @@ intercept_disasm_init(const unsigned char *begin, const unsigned char *end)
 		cs_arch arch;
 		cs_mode mode;
 	} all_archs[] = {
-		{ CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN },
-		{ CS_ARCH_ARM64, CS_MODE_BIG_ENDIAN },
+		{ CS_ARCH_ARM, CS_MODE_LITTLE_ENDIAN },
+		{ CS_ARCH_ARM, CS_MODE_BIG_ENDIAN },
 		{ CS_ARCH_X86, CS_MODE_64 },
 	};
 	const size_t nr_all_archs = sizeof(all_archs) / sizeof(all_archs[0]);
@@ -177,7 +177,7 @@ intercept_disasm_next_instruction(struct intercept_disasm_context *context,
 	assert(result.length != 0);
 	assert((result.length % INSTRUCTION_SIZE) == 0);
 
-	result.is_syscall = (context->insn->id == ARM64_INS_SVC);
+	result.is_syscall = (context->insn->id == ARM_INS_SVC);
 	result.is_set = true;
 
 	return result;
