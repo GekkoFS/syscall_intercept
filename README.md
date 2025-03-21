@@ -14,13 +14,13 @@ A user space library for intercepting syscalls on the RISC-V architecture.
 
 ### Runtime dependencies:
 
- * Capstone ≥ v5 (v6 recommended) -- the disassembly engine used under the hood
+ * Capstone ≥ v6 -- the disassembly engine used under the hood
 
 
 # How to Build
 
 The RISC-V toolchain can be built from the [RISC-V GNU Toolchain](https://github.com/riscv-collab/riscv-gnu-toolchain).  
-Capstone can be installed from [Capstone Engine](https://www.capstone-engine.org/documentation.html).
+Capstone can be installed from [Capstone Engine](https://www.capstone-engine.org/documentation.html) or [built from source](https://github.com/capstone-engine/capstone/blob/next/BUILDING.md).
 
 Building libsyscall\_intercept requires CMake:
 ```bash
@@ -63,7 +63,7 @@ int syscall_hook_in_process_allowed(void);
 ```
 #### Compile
 ```bash
-$ cc -lsyscall_intercept -fpic -shared source.c -o preloadlib.so
+$ cc source.c -lsyscall_intercept -fpic -shared -o preloadlib.so
 ```
 #### Run with `LD_PRELOAD`
 ```bash
@@ -140,7 +140,7 @@ hook(long syscall_number,
 			long arg4, long arg5,
 			long *result)
 {
-	if (syscall_number == SYS_getdents) {
+	if (syscall_number == SYS_openat) {
 		/*
 		 * Prevent the application from
 		 * using the getdents syscall. From
@@ -172,7 +172,7 @@ Compile and run:
 ```bash
 $ cc example.c -lsyscall_intercept -fpic -shared -o example.so
 $ LD_LIBRARY_PATH=. LD_PRELOAD=example.so ls
-ls: reading directory '.': Operation not supported
+ls: cannot open directory '.': Operation not supported
 ```
 
 
