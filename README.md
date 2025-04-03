@@ -1,5 +1,7 @@
 # syscall\_intercept
 
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-009550.svg)](https://opensource.org/license/bsd-3-clause)
+
 A user space library for intercepting syscalls on the RISC-V architecture.
 
 
@@ -253,3 +255,7 @@ Alternatively, set `LD_PRELOAD` within the gdb session or configure it in a `.gd
 set environment LD_PRELOAD libsyscall_intercept.so
 ```
 
+
+# Acknowledgments
+* partially promoted by the Ministry for Digital Transformation and the Civil Service, within the framework of the Recovery, Transformation and Resilience Plan - Funded by the European Union - NextGenerationEU
+* partially promoted by RISC-V International during the Summer Mentorship Program of 2024
