@@ -76,18 +76,24 @@
 				JALR_INS_SIZE)
 
 /*
- * NOTE: JAL_AVG_REACH reach lays in between +/- offset, the positive offset is
+ * NOTE: JAL_AVG_REACH lays in between +/- offset, the positive offset is
  *       0xffffe and the negative is 0x100000.
  *       The bias is 2 because of the implicit bit.
  */
 #define JAL_AVG_REACH		0xfffff
 /*
- * NOTE: JUMP_2GB_MAX_REACH reach applies to the negative offset
- * 	 while the positive offset is: JUMP_2GB_MAX_REACH - 4KB
- * 	 because of 2's complement bias and auipc shifting (1 << 12)
+ * NOTE: JUMP_2GB_*_REACH is split into +/- because the bias is more significant
+ * 	 than in JAL_AVG_REACH. The positive reach is ~4KB shorter than the
+ * 	 negative reach because of 2's complement bias and auipc 12-bit shifting.
+ * 	 Max positive reach (2147481598 B):
+ * 	 	auipc increases PC by 0x7ffff000 (INT32_MAX - 0xfff)
+ * 	 	jalr offset gives an extra 0x7fe (max even value)
+ * 	 Max negative reach (−2147485696 B):
+ * 	 	auipc reduces PC by 0x80000000 (INT32_MIN)
+ * 	 	jalr offset reduces PC by an extra 0x800
  */
-#define JUMP_2GB_NEG_REACH	INT32_MIN
-#define JUMP_2GB_POS_REACH	(INT32_MAX - 0xfff)
+#define JUMP_2GB_POS_REACH	(INT32_MAX - 0x801)
+#define JUMP_2GB_NEG_REACH	((long)INT32_MIN - 0x800)
 
 /* Pseudo instructions max sizes */
 #define MAX_PC_INS_SIZE		RV_INS_SIZE

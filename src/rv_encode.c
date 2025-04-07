@@ -55,7 +55,7 @@ reverse_byte_order(uint8_t *instr_buff, uint32_t instr, size_t size)
 }
 
 static offsets_2GB
-get_auipc_offsets(uintptr_t from, uintptr_t to)
+get_2GB_offsets(uintptr_t from, uintptr_t to)
 {
 	ptrdiff_t delta = to - from;
 
@@ -576,7 +576,7 @@ rvp_sd_to_sym(uint8_t *instrs_buff, uint8_t tmp_reg, uint8_t rs,
 	uint8_t total_size = 0;
 	offsets_2GB offs;
 
-	offs = get_auipc_offsets(from, sym_addr);
+	offs = get_2GB_offsets(from, sym_addr);
 	if (offs.offset_hi == 0 && offs.offset_lo == 0)
 		return 0;
 
@@ -595,7 +595,7 @@ rvp_ld_from_sym(uint8_t *instrs_buff, uint8_t rd,
 	uint8_t total_size = 0;
 	offsets_2GB offs;
 
-	offs = get_auipc_offsets(from, sym_addr);
+	offs = get_2GB_offsets(from, sym_addr);
 	if (offs.offset_hi == 0 && offs.offset_lo == 0)
 		return 0;
 
@@ -614,7 +614,7 @@ rvp_jump_2GB(uint8_t *instrs_buff, uint8_t rd, uint8_t rs,
 	uint8_t total_size = 0;
 	offsets_2GB offs;
 
-	offs = get_auipc_offsets(from, to);
+	offs = get_2GB_offsets(from, to);
 	if (offs.offset_hi == 0 && offs.offset_lo == 0)
 		return 0;
 
