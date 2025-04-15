@@ -217,8 +217,7 @@ check_reg_set(struct intercept_disasm_result *result, struct cs_insn *insn)
 		result->reg_set = op0.reg - 1;
 #ifdef __riscv_c
 	// ra implicitly overwritten
-	else if (insn->id == RISCV_INS_C_JAL || (insn->id == RISCV_INS_C_JALR &&
-			op0.reg != RISCV_REG_RA))
+	else if (insn->id == RISCV_INS_C_JALR && op0.reg != RISCV_REG_RA)
 		result->reg_set = RISCV_REG_RA - 1;
 #endif
 }
