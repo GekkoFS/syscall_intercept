@@ -77,10 +77,17 @@
 
 /*
  * NOTE: JAL_AVG_REACH lays in between +/- offset, the positive offset is
- *       0xffffe and the negative is 0x100000.
- *       The bias is 2 because of the implicit bit.
+ * 	 0xffffe and the negative is 0x100000. It is not relevant to split
+ * 	 reach into +/- because JAL can reach whole .text section with positive
+ * 	 offset.
  */
 #define JAL_AVG_REACH		0xfffff
+/*
+ * NOTE: C_J_*_REACH is split into +/- offsets because those additional 2B
+ * 	 in negative reach could make a difference in reaching the TYPE_GW.
+ */
+#define C_J_POS_REACH		0x7fe
+#define C_J_NEG_REACH		-0x800
 /*
  * NOTE: JUMP_2GB_*_REACH is split into +/- because the bias is more significant
  * 	 than in JAL_AVG_REACH. The positive reach is ~4KB shorter than the
@@ -156,6 +163,7 @@ uint8_t rvc_addi16sp(uint8_t *instr_buff, int32_t imm);
 uint8_t rvc_addi(uint8_t *instr_buff, uint8_t rd, int32_t imm);
 uint8_t rvc_addiw(uint8_t *instr_buff, uint8_t rd, int32_t imm);
 uint8_t rvc_slli(uint8_t *instr_buff, uint8_t rd, int32_t imm);
+uint8_t rvc_j(uint8_t *instr_buff, int32_t imm);
 uint8_t rvc_jalr(uint8_t *instr_buff, uint8_t rs);
 uint8_t rvc_jr(uint8_t *instr_buff, uint8_t rs);
 uint8_t rvc_nop(uint8_t *instr_buff);

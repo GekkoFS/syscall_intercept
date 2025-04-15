@@ -251,6 +251,25 @@ rvc_slli(uint8_t *instr_buff, uint8_t rd, int32_t imm)
 }
 
 uint8_t
+rvc_j(uint8_t *instr_buff, int32_t imm)
+{
+	if (imm < C_J_NEG_REACH || imm > C_J_POS_REACH)
+		return 0;
+
+	uint16_t instr = 0;
+	imm >>= 1;
+
+	instr = 0x5 << 13 | (imm >> 10 & 0x1) << 12 | (imm >> 3 & 0x1) << 11;
+	instr |= (imm >> 7 & 0x3) << 9 | (imm >> 9 & 0x1) << 8;
+	instr |= (imm >> 5 & 0x1) << 7 | (imm >> 6 & 0x1) << 6;
+	instr |= (imm & 0x7) << 3 | (imm >> 4 & 0x1) << 2 | 0x1;
+
+	reverse_byte_order(instr_buff, instr, RVC_INS_SIZE);
+
+	return RVC_INS_SIZE;
+}
+
+uint8_t
 rvc_jalr(uint8_t *instr_buff, uint8_t rs)
 {
 	if (rs == REG_ZERO)
