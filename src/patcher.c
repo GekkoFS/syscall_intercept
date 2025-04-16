@@ -695,7 +695,7 @@ copy_GW(struct intercept_desc *desc, const struct patch_desc *patch)
 	instrs_size += rvpc_sd(instrs_buff + instrs_size,
 				ret_reg, REG_SP, ORIG_RA_OFF);
 
-	instrs_size += rvp_jump_2GB(instrs_buff + instrs_size, ret_reg, ret_reg,
+	instrs_size += rvp_jump_GW(instrs_buff + instrs_size, ret_reg, ret_reg,
 					jalr_addr, destination);
 
 	instrs_size += rvpc_ld(instrs_buff + instrs_size,

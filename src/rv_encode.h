@@ -193,6 +193,8 @@ uint8_t rvp_sd_to_sym(uint8_t *instrs_buff, uint8_t tmp_reg, uint8_t rs,
 			uintptr_t from, uintptr_t sym_addr);
 uint8_t rvp_ld_from_sym(uint8_t *instrs_buff, uint8_t rd,
 			uintptr_t from, uintptr_t sym_addr);
+uint8_t rvp_jump_GW(uint8_t *instrs_buff, uint8_t rd, uint8_t rs,
+			uintptr_t from, uintptr_t to);
 uint8_t rvp_jump_2GB(uint8_t *instrs_buff, uint8_t rd, uint8_t rs,
 			uintptr_t from, uintptr_t to);
 uint8_t rvp_jump_abs(uint8_t *instrs_buff, uint8_t rd,

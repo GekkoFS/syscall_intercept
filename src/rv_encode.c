@@ -627,6 +627,24 @@ rvp_ld_from_sym(uint8_t *instrs_buff, uint8_t rd,
 }
 
 uint8_t
+rvp_jump_GW(uint8_t *instrs_buff, uint8_t rd, uint8_t rs,
+		uintptr_t from, uintptr_t to)
+{
+	uint8_t total_size = 0;
+	offsets_2GB offs;
+
+	offs = get_2GB_offsets(from, to);
+	if (offs.offset_hi == 0 && offs.offset_lo == 0)
+		return 0;
+
+	total_size += rv_auipc(instrs_buff + total_size, rs, offs.offset_hi);
+	total_size += rv_jalr(instrs_buff + total_size,
+				rd, rs, offs.offset_lo);
+
+	return total_size;
+}
+
+uint8_t
 rvp_jump_2GB(uint8_t *instrs_buff, uint8_t rd, uint8_t rs,
 		uintptr_t from, uintptr_t to)
 {
