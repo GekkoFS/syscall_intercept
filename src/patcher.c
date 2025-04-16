@@ -695,8 +695,14 @@ copy_GW(struct intercept_desc *desc, const struct patch_desc *patch)
 	instrs_size += rvpc_sd(instrs_buff + instrs_size,
 				ret_reg, REG_SP, ORIG_RA_OFF);
 
-	instrs_size += rvp_jump_GW(instrs_buff + instrs_size, ret_reg, ret_reg,
+	uint8_t size = rvp_jump_GW(instrs_buff + instrs_size, ret_reg, ret_reg,
 					jalr_addr, destination);
+	// if rvp_jump_GW() fails, it implies `INTERCEPT_NO_TRAMPOLINE=1`
+	if (size == 0)
+		xabort("copy_GW: libsyscall_intercept.so and the target library are "
+			"more than 2 GB apart.\nA trampoline must be used; unset the "
+			"INTERCEPT_NO_TRAMPOLINE environment variable.");
+	instrs_size += size;
 
 	instrs_size += rvpc_ld(instrs_buff + instrs_size,
 				ret_reg, REG_SP, ORIG_RA_OFF);
