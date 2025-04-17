@@ -75,23 +75,15 @@
 				SLLI_INS_SIZE + \
 				JALR_INS_SIZE)
 
-/*
- * NOTE: JAL_AVG_REACH lays in between +/- offset, the positive offset is
- * 	 0xffffe and the negative is 0x100000. It is not relevant to split
- * 	 reach into +/- because JAL can reach whole .text section with positive
- * 	 offset.
- */
-#define JAL_AVG_REACH		0xfffff
-/*
- * NOTE: C_J_*_REACH is split into +/- offsets because those additional 2B
- * 	 in negative reach could make a difference in reaching the TYPE_GW.
- */
+// JAL_*_REACH is split into +/- offsets
+#define JAL_POS_REACH		0xffffe
+#define JAL_NEG_REACH		-0x100000
+// C_J_*_REACH is split into +/- offsets
 #define C_J_POS_REACH		0x7fe
 #define C_J_NEG_REACH		-0x800
 /*
- * NOTE: JUMP_2GB_*_REACH is split into +/- because the bias is more significant
- * 	 than in JAL_AVG_REACH. The positive reach is ~4KB shorter than the
- * 	 negative reach because of 2's complement bias and auipc 12-bit shifting.
+ * NOTE: JUMP_2GB_*_REACH is split into +/- offsets. The positive reach is ~4KB shorter
+ * 	 than the negative reach because of 2's complement bias and auipc 12-bit shifting.
  * 	 Max positive reach (2147481598 B):
  * 	 	auipc increases PC by 0x7ffff000 (INT32_MAX - 0xfff)
  * 	 	jalr offset gives an extra 0x7fe (max even value)

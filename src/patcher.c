@@ -279,26 +279,33 @@ check_surrounding_instructions(struct intercept_desc *desc,
 static void
 find_GW(struct intercept_desc *desc, struct patch_desc *patch)
 {
-	// TYPE_MID and TYPE_SML jump address and offset (TYPE_MID)
+	uint32_t patch_i;
+	ptrdiff_t dst;
 	const uint8_t *jump_from;
+
+	// TYPE_MID and TYPE_SML jump address and offset (TYPE_MID)
 	if (patch->syscall_num == TYPE_MID)
 		jump_from = patch->return_address - JAL_INS_SIZE -
 				MODIFY_SP_INS_SIZE;
 	else // TYPE_SML
 		jump_from = patch->return_address - JAL_INS_SIZE;
 
-	for (uint32_t patch_i = 0; patch_i < desc->count; ++patch_i) {
+	for (patch_i = 0; patch_i < desc->count; ++patch_i) {
 		struct patch_desc *patch_GW = desc->items + patch_i;
 
 		// not a TYPE_GW, skip
 		if (patch_GW->syscall_num != TYPE_GW)
 			continue;
 
-		if (labs(patch_GW->dst_jmp_patch - jump_from) < JAL_AVG_REACH) {
+		dst = patch_GW->dst_jmp_patch - jump_from;
+		if (JAL_NEG_REACH <= dst && dst <= JAL_POS_REACH) {
 			patch->dst_jmp_patch = patch_GW->dst_jmp_patch;
 			break;
 		}
 	}
+
+	if (patch_i >= desc->count)
+		xabort("find_GW: no Gateways in reach");
 
 	// offsetting TYPE_MID to skip `addi sp, sp, -PATCH_SP_OFF`
 	if (patch->syscall_num == TYPE_MID)
