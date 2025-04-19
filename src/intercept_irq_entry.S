@@ -39,7 +39,7 @@
 
 	/* Constants */
 	// the final size is determined in runtime, but this is the minimum size
-	.equ	RELOCATION_SIZE, 0x80000
+	.equ	RELOCATION_SIZE, 0x20000
 	// NOTE: align this to 16, (NR_GPR + NR_FPR) * 8 % 16 == 0
 	.equ	NR_GPR, 32
 	.equ	NR_FPR, 32
