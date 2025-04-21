@@ -91,6 +91,13 @@
 
 #include <stdio.h>
 
+#define MAX_RELOC_PATCH_SIZE(patch_size)	(patch_size + MAX_PC_INS_SIZE * 15 - ECALL_INS_SIZE)
+
+
+extern uint8_t asm_relocation_space[];
+extern uint64_t asm_relocation_space_size;
+static uint8_t *cur_asm_relocation_space = asm_relocation_space;
+
 /*
  * While executing patched instructions, these global variables are used in the
  * relocation space (intercept_irq_entry) in case the patched instructions use
@@ -116,6 +123,13 @@ init_tls_offset_table(void)
 		(uintptr_t)&asm_ra_orig - tp_addr;
 	tls_offset_table.asm_ra_temp =
 		(uintptr_t)&asm_ra_temp - tp_addr;
+}
+
+static bool
+is_asm_relocation_space_full(uint8_t curr_patch_size)
+{
+	return (uint64_t)(cur_asm_relocation_space - asm_relocation_space) >
+		asm_relocation_space_size - curr_patch_size;
 }
 
 /*
@@ -423,7 +437,7 @@ align_start_addr_and_size(struct patch_desc *patch,
 #endif
 
 static void
-load_orig_ra_temp(uint8_t **dst)
+load_orig_ra_temp(void)
 {
 	uint8_t instrs_buff[MAX_PC_INS_SIZE * 2];
 	uint8_t instrs_size = 0;
@@ -433,12 +447,12 @@ load_orig_ra_temp(uint8_t **dst)
 	instrs_size += rvpc_ld(instrs_buff + instrs_size, REG_RA, REG_TP,
 				(int32_t)tls_offset_table.asm_ra_orig);
 
-	memcpy(*dst, instrs_buff, instrs_size);
-	*dst += instrs_size;
+	memcpy(cur_asm_relocation_space, instrs_buff, instrs_size);
+	cur_asm_relocation_space += instrs_size;
 }
 
 static void
-store_new_ra_temp(uint8_t **dst)
+store_new_ra_temp(void)
 {
 	uint8_t instrs_buff[MAX_PC_INS_SIZE * 2];
 	uint8_t instrs_size = 0;
@@ -448,24 +462,24 @@ store_new_ra_temp(uint8_t **dst)
 	instrs_size += rvpc_ld(instrs_buff + instrs_size, REG_RA, REG_TP,
 				(int32_t)tls_offset_table.asm_ra_temp);
 
-	memcpy(*dst, instrs_buff, instrs_size);
-	*dst += instrs_size;
+	memcpy(cur_asm_relocation_space, instrs_buff, instrs_size);
+	cur_asm_relocation_space += instrs_size;
 }
 
 static void
-copy_jump(uint8_t **dst, uint8_t rd, uint8_t rs, int16_t offset)
+copy_jump(uint8_t rd, uint8_t rs, int16_t offset)
 {
 	uint8_t instr_buff[MAX_PC_INS_SIZE];
 	uint8_t instr_size;
 
 	instr_size = rvpc_jalr(instr_buff, rd, rs, offset);
 
-	memcpy(*dst, instr_buff, instr_size);
-	*dst += instr_size;
+	memcpy(cur_asm_relocation_space, instr_buff, instr_size);
+	cur_asm_relocation_space += instr_size;
 }
 
 static void
-finalize_and_jump_back(uint8_t **dst, struct patch_desc *patch)
+finalize_and_jump_back(struct patch_desc *patch)
 {
 	uint8_t instrs_buff[MAX_PC_INS_SIZE * 5];
 	uint8_t instrs_size = 0;
@@ -518,14 +532,14 @@ finalize_and_jump_back(uint8_t **dst, struct patch_desc *patch)
 	// copy the jump instruction to return to glibc
 	instrs_size += rvpc_jalr(instrs_buff + instrs_size, REG_ZERO, ret_reg, 0);
 
-	memcpy(*dst, instrs_buff, instrs_size);
-	*dst += instrs_size;
+	memcpy(cur_asm_relocation_space, instrs_buff, instrs_size);
+	cur_asm_relocation_space += instrs_size;
 }
 
 static void
-relocate_instrs(struct patch_desc *patch, uint8_t **dst)
+relocate_instrs(struct patch_desc *patch)
 {
-	patch->relocation_address = *dst;
+	patch->relocation_address = cur_asm_relocation_space;
 
 	uint8_t *start_addr = patch->dst_jmp_patch;
 	size_t patch_size = patch->patch_size_bytes;
@@ -536,44 +550,44 @@ relocate_instrs(struct patch_desc *patch, uint8_t **dst)
 	align_start_addr_and_size(patch, &start_addr, &patch_size);
 #endif
 	if (patch->is_ra_used_before)
-		load_orig_ra_temp(dst);
+		load_orig_ra_temp();
 
 	/* copy patched instructions before ecall */
 	before_ecall_size = patch->syscall_addr - start_addr;
-	memcpy(*dst, start_addr, before_ecall_size);
-	*dst += before_ecall_size;
+	memcpy(cur_asm_relocation_space, start_addr, before_ecall_size);
+	cur_asm_relocation_space += before_ecall_size;
 
 	if (patch->is_ra_used_before)
-		store_new_ra_temp(dst);
+		store_new_ra_temp();
 
 	/*
 	 * the instructions before ecall are copied,
 	 * copy jump instruction to go back to asm_entry_point
 	 */
-	copy_jump(dst, REG_RA, REG_RA, 0);
+	copy_jump(REG_RA, REG_RA, 0);
 
 	/* copy patched instructions after ecall */
 	after_ecall_size = patch_size - before_ecall_size - ECALL_INS_SIZE;
 	if (after_ecall_size > 0) {
 		if (patch->is_ra_used_after)
-			load_orig_ra_temp(dst);
+			load_orig_ra_temp();
 
-		memcpy(*dst, patch->syscall_addr + ECALL_INS_SIZE,
+		memcpy(cur_asm_relocation_space, patch->syscall_addr + ECALL_INS_SIZE,
 			after_ecall_size);
-		*dst += after_ecall_size;
+		cur_asm_relocation_space += after_ecall_size;
 
 		if (patch->is_ra_used_after)
-			store_new_ra_temp(dst);
+			store_new_ra_temp();
 	}
 
 	/*
 	 * the instructions after ecall are copied,
 	 * copy jump instruction to return to asm_entry_point
 	 */
-	copy_jump(dst, REG_RA, REG_RA, 0);
+	copy_jump(REG_RA, REG_RA, 0);
 
 	/* prepare for jump and go back to glibc */
-	finalize_and_jump_back(dst, patch);
+	finalize_and_jump_back(patch);
 
 	return;
 }
@@ -594,7 +608,7 @@ relocate_instrs(struct patch_desc *patch, uint8_t **dst)
  * finding padding bytes, etc..
  */
 void
-create_patch(struct intercept_desc *desc, uint8_t **dst)
+create_patch(struct intercept_desc *desc)
 {
 	for (uint32_t patch_i = 0; patch_i < desc->count; ++patch_i) {
 		struct patch_desc *patch = desc->items + patch_i;
@@ -625,15 +639,18 @@ create_patch(struct intercept_desc *desc, uint8_t **dst)
 
 		position_patch(patch);
 
-		uint8_t *last_instr_addr =
-			patch->dst_jmp_patch + patch->patch_size_bytes;
+		uint8_t *last_instr_addr = patch->dst_jmp_patch + patch->patch_size_bytes;
 #ifdef __riscv_c
 		if (patch->end_with_c_nop)
 			last_instr_addr += C_NOP_INS_SIZE;
 #endif
 		mark_jump(desc, last_instr_addr);
 
-		relocate_instrs(patch, dst);
+		if (is_asm_relocation_space_full(MAX_RELOC_PATCH_SIZE(patch->patch_size_bytes)))
+			xabort("create_patch: insufficient relocation space, increase "
+				"RELOCATION_SIZE constant inside of intercept_irq_entry.S");
+
+		relocate_instrs(patch);
 
 		/*
 		 * All valuable info from the surrounding instrs is gathered,

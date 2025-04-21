@@ -192,7 +192,7 @@ void mark_jump(const struct intercept_desc *desc, const unsigned char *addr);
 void allocate_trampoline(struct intercept_desc *desc);
 void find_syscalls(struct intercept_desc *desc);
 
-void create_patch(struct intercept_desc *desc, unsigned char **dst);
+void create_patch(struct intercept_desc *desc);
 
 /*
  * Actually overwrite instructions in glibc.

@@ -427,14 +427,6 @@ const char *cmdline;
 
 extern uint8_t asm_relocation_space[];
 extern uint64_t asm_relocation_space_size;
-static uint8_t *cur_asm_relocation_space = asm_relocation_space;
-
-static bool
-is_asm_relocation_space_full(void)
-{
-	return (uint64_t)(cur_asm_relocation_space - asm_relocation_space) >
-		asm_relocation_space_size;
-}
 
 /*
  * Enable/disable writing on relocation space (intercept_irq_entry.S).
@@ -499,11 +491,9 @@ intercept(int argc, char **argv)
 	for (uint32_t i = 0; i < objs_count; ++i) {
 		if (objs[i].count == 0)
 			continue;
-		else if (is_asm_relocation_space_full())
-			xabort("not enough space in relocation space");
 
 		allocate_trampoline(objs + i);
-		create_patch(objs + i, &cur_asm_relocation_space);
+		create_patch(objs + i);
 	}
 
 	write_enable_asm_relocation_space(false);
