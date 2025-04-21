@@ -31,7 +31,7 @@
  */
 
 /*
- * intercept_irq_entry.S -- TODO: docs
+ * intercept_irq_entry.S -- see doc/RV_doc.md
  */
 
 // offsets (constants) common to both patcher.c and this TU
@@ -42,7 +42,11 @@
 	.equ	RELOCATION_SIZE, 0x20000
 	// NOTE: align this to 16, (NR_GPR + NR_FPR) * 8 % 16 == 0
 	.equ	NR_GPR, 32
+#ifdef __riscv_f
 	.equ	NR_FPR, 32
+#else
+	.equ	NR_FPR, 0
+#endif
 	.equ	CONTEXT_SIZE, (NR_GPR + NR_FPR) * 8
 
 
@@ -98,8 +102,12 @@
 		addi	sp, sp, -CONTEXT_SIZE
 
 		/*
-		 * Store almost all GPRs to be able to use callee/caller saved
-		 * registers inside of the wrapper functions without worries.
+		 * Store all caller-saved GPRs. s0 and s1 are the only callee-saved GPRs stored
+		 * to allow their use inside the wrapper functions without concern.
+		 * Technically, any temporary register (t0–t6) could be used instead of s0/s1,
+		 * but doing so would prevent many memory-related instructions from being
+		 * compressed. Additionally, s0 and s1 conveniently preserve values of interest
+		 * when calling C functions.
 		 */
 		STORE_G	1
 		STORE_G	5
@@ -115,16 +123,6 @@
 		STORE_G	15
 		STORE_G	16
 		STORE_G	17
-		STORE_G	18
-		STORE_G	19
-		STORE_G	20
-		STORE_G	21
-		STORE_G	22
-		STORE_G	23
-		STORE_G	24
-		STORE_G	25
-		STORE_G	26
-		STORE_G	27
 		STORE_G	28
 		STORE_G	29
 		STORE_G	30
@@ -172,16 +170,6 @@
 		LOAD_G	15
 		LOAD_G	16
 		LOAD_G	17
-		LOAD_G	18
-		LOAD_G	19
-		LOAD_G	20
-		LOAD_G	21
-		LOAD_G	22
-		LOAD_G	23
-		LOAD_G	24
-		LOAD_G	25
-		LOAD_G	26
-		LOAD_G	27
 		LOAD_G	28
 		LOAD_G	29
 		LOAD_G	30
@@ -218,28 +206,28 @@
 	 * MV_TLS_TO_STACK just does the opposite after the execution is done.
 	 */
 	.macro MV_STACK_TO_TLS
-		sd	t0, UNUSED_OFF1(sp)
-		sd	t1, UNUSED_OFF2(sp)
+		sd	s0, UNUSED_OFF1(sp)
+		sd	s1, UNUSED_OFF2(sp)
 
-		ld	t0, ORIG_RA_OFF(sp)
-		SDSYMT	t0, asm_ra_orig, t1
-		ld	t0, RET_ADDR_OFF(sp)
-		SDSYMT	t0, return_address, t1
+		ld	s0, ORIG_RA_OFF(sp)
+		SDSYMT	s0, asm_ra_orig, s1
+		ld	s0, RET_ADDR_OFF(sp)
+		SDSYMT	s0, return_address, s1
 
-		ld	t0, UNUSED_OFF1(sp)
-		ld	t1, UNUSED_OFF2(sp)
+		ld	s0, UNUSED_OFF1(sp)
+		ld	s1, UNUSED_OFF2(sp)
 		addi	sp, sp, PATCH_SP_OFF
 	.endm
 	.macro MV_TLS_TO_STACK
 		addi	sp, sp, -PATCH_SP_OFF
-		sd	t0, UNUSED_OFF1(sp)
+		sd	s0, UNUSED_OFF1(sp)
 
-		LDSYMT	t0, asm_ra_orig
-		sd	t0, ORIG_RA_OFF(sp)
-		LDSYMT	t0, return_address
-		sd	t0, RET_ADDR_OFF(sp)
+		LDSYMT	s0, asm_ra_orig
+		sd	s0, ORIG_RA_OFF(sp)
+		LDSYMT	s0, return_address
+		sd	s0, RET_ADDR_OFF(sp)
 
-		ld	t0, UNUSED_OFF1(sp)
+		ld	s0, UNUSED_OFF1(sp)
 	.endm
 
 	/*
@@ -248,32 +236,32 @@
 	 * the child process have to be ready immediately after creation.
 	 */
 	.macro MV_STACK_TO_SHR
-		sd	t0, UNUSED_OFF1(sp)
-		sd	t1, UNUSED_OFF2(sp)
+		sd	s0, UNUSED_OFF1(sp)
+		sd	s1, UNUSED_OFF2(sp)
 
-		ld	t0, ORIG_RA_OFF(sp)
-		sd	t0, asm_ra_orig_shr, t1
-		ld	t0, RET_ADDR_OFF(sp)
-		sd	t0, return_address_shr, t1
-		ld	t0, RELOC_ADDR_OFF(sp)
-		sd	t0, reloc_instrs_addr_shr, t1
+		ld	s0, ORIG_RA_OFF(sp)
+		sd	s0, asm_ra_orig_shr, s1
+		ld	s0, RET_ADDR_OFF(sp)
+		sd	s0, return_address_shr, s1
+		ld	s0, RELOC_ADDR_OFF(sp)
+		sd	s0, reloc_instrs_addr_shr, s1
 
-		ld	t0, UNUSED_OFF1(sp)
-		ld	t1, UNUSED_OFF2(sp)
+		ld	s0, UNUSED_OFF1(sp)
+		ld	s1, UNUSED_OFF2(sp)
 		addi	sp, sp, PATCH_SP_OFF
 	.endm
 	.macro MV_SHR_TO_STACK
 		addi	sp, sp, -PATCH_SP_OFF
-		sd	t0, UNUSED_OFF1(sp)
+		sd	s0, UNUSED_OFF1(sp)
 
-		ld	t0, asm_ra_orig_shr
-		sd	t0, ORIG_RA_OFF(sp)
-		ld	t0, return_address_shr
-		sd	t0, RET_ADDR_OFF(sp)
-		ld	t0, reloc_instrs_addr_shr
-		sd	t0, RELOC_ADDR_OFF(sp)
+		ld	s0, asm_ra_orig_shr
+		sd	s0, ORIG_RA_OFF(sp)
+		ld	s0, return_address_shr
+		sd	s0, RET_ADDR_OFF(sp)
+		ld	s0, reloc_instrs_addr_shr
+		sd	s0, RELOC_ADDR_OFF(sp)
 
-		ld	t0, UNUSED_OFF1(sp)
+		ld	s0, UNUSED_OFF1(sp)
 	.endm
 
 
@@ -373,7 +361,7 @@ asm_entry_point:
 	 * finalize_and_jump_back(). Bye-bye, patch! Good luck out there!    *
 	 *********************************************************************/
 	ld	ra, RELOC_ADDR_OFF(sp)
-	jalr	zero, ra
+	ret
 	.cfi_endproc
 	.size	asm_entry_point, . - asm_entry_point
 
@@ -415,7 +403,7 @@ exec_relocated_instructions:
 	 * it will be modified or used there. If it is, a block of instructions
 	 * will be there to aid that (load_orig_ra_temp()/store_new_ra_temp()).
 	 */
-	jalr	ra, ra
+	jalr	ra
 
 	/*
 	 * After executing the relocated instructions, ra holds the address of
@@ -450,15 +438,15 @@ exec_relocated_instructions:
  * Typically, amoswap is used for spinlocks; however, amomax is used instead to
  * reduce pressure on the memory bus. While amoswap always performs a load/store
  * cycle, amomax will only perform a store if necessary (when the lock is open,
- * i.e., 0). At least, in theory...
+ * i.e., 0). At least, in theory (e.g., microarchitecture implements silent stores)...
  */
 spinlock_aq:
 	.cfi_startproc
 	addi	sp, sp, -16
-	sd	t0, 0(sp)
-	sd	t1, 8(sp)
+	sd	s0, 0(sp)
+	sd	s1, 8(sp)
 
-	li	t1, 1
+	li	s1, 1
 .Lwait:
 #ifdef __riscv_a
 	/*
@@ -467,10 +455,10 @@ spinlock_aq:
 	 * `fence 0, rw`; the '0' signifies that prior i/o/r/w operations are not
 	 * affected, making it more optimized than software-based spinlocks (below).
 	 */
-	amomax.w.aq	t1, t1, (a0)
-	bnez		t1, .Lwait
+	amomax.w.aq	s1, s1, (a0)
+	bnez		s1, .Lwait
 #else
-	lw	t0, (a0)
+	lw	s0, (a0)
 	/*
 	 * In this non-atomic spinlock, prior loads (specifically the lw above)
 	 * must be executed before the bnez and sw instructions below. `fence r, rw`
@@ -478,12 +466,12 @@ spinlock_aq:
 	 * lock. This software-based spinlock is not reliable under high contention.
 	 */
 	fence	r, rw
-	bnez	t0, .Lwait
-	sw	t1, (a0)
+	bnez	s0, .Lwait
+	sw	s1, (a0)
 #endif
 
-	ld	t0, 0(sp)
-	ld	t1, 8(sp)
+	ld	s0, 0(sp)
+	ld	s1, 8(sp)
 	addi	sp, sp, 16
 	ret
 	.cfi_endproc
@@ -519,7 +507,7 @@ detect_cur_patch_wrapper:
 	STORE_CONTEXT_PROLOGUE
 	// use frame buffer to simplify offsetting
 	addi	s0, sp, CONTEXT_SIZE
-	// place a7 in a callee-saved register to preserve it after the call
+	// place a7 in a callee-saved register to preserve it after the call, important to TYPE_SML
 	mv	s1, a7
 
 	/* The table shows where important values are stored by patch types
@@ -527,12 +515,12 @@ detect_cur_patch_wrapper:
 	 *      *    return address    * original ra *   a7 (ecall) value    *
 	 *********************************************************************
 	 * GW   *   UNUSED_OFF1(sp)    *    0(sp)    *    a7 (unchanged)     *
-	 * MID  *        0(sp)         *    8(sp)    *    a7 (unchanged)     *
+	 * MID  *   ORIG_RA_OFF(sp)    *    8(sp)    *    a7 (unchanged)     *
 	 * SML  *         a7           *    0(sp)    *  patch->syscall_num   *
 	 *********************************************************************/
 
 	// a0 will hold TYPE_MID ret addr
-	ld	a0, 0(s0)
+	ld	a0, ORIG_RA_OFF(s0)
 	// a1 will hold TYPE_SML ret addr
 	mv	a1, a7
 	// a2 will hold TYPE_GW ret addr
@@ -547,32 +535,37 @@ detect_cur_patch_wrapper:
 
 	// store results (a0 is only relevant to TYPE_SML):
 	sd	a1, RELOC_ADDR_OFF(s0)
-	// restore original a7 in case it was clobbered
-	mv	a7, s1
 
-	bge	a0, zero, .Lsml
-	li	t0, -1
-	beq	a0, t0, .Lmid
-	li	t0, -2
-	beq	a0, t0, .Lgw
+	// TYPE_SML	a0 >= 0
+	// TYPE_MID	a0 == -1
+	// TYPE_GW	a0 == -2
+	bgez	a0, .Lsml
+	addi	a0, a0, 1
+	beqz	a0, .Lmid
+	/*
+	 * NOTE: No instructions should be placed between the branches above and the
+	 *       .Lgw symbol, as this gap is treated as a fallthrough. Or, uncomment
+	 *       the j instruction below before adding any new instructions.
+	 */
+	//j	.Lgw
 
-.Lsml:
-	sd	a7, RET_ADDR_OFF(s0)
-	// detect_cur_patch returned syscall_num, replace old a7 (x17) on the stack
-	SDSP_G	a0, 17
+.Lgw:
+	ld	a0, UNUSED_OFF1(s0)
+	sd	a0, RET_ADDR_OFF(s0)
 	j	.Ldone
 
 .Lmid:
-	ld	t0, 0(s0)
-	ld	t1, 8(s0)
-	sd	t0, RET_ADDR_OFF(s0)
-	sd	t1, ORIG_RA_OFF(s0)
+	ld	a0, 0(s0)
+	ld	a1, 8(s0)
+	sd	a0, RET_ADDR_OFF(s0)
+	sd	a1, ORIG_RA_OFF(s0)
 	j	.Ldone
 
-.Lgw:
-	ld	t0, UNUSED_OFF1(s0)
-	sd	t0, RET_ADDR_OFF(s0)
-	j	.Ldone
+.Lsml:
+	// original a7 value was stored in s1 prior to detect_cur_patch() call
+	sd	s1, RET_ADDR_OFF(s0)
+	// detect_cur_patch() returned syscall_num, replace old a7 (x17) on the stack
+	SDSP_G	a0, 17
 
 .Ldone:
 	LOAD_CONTEXT_EPILOGUE
@@ -605,9 +598,17 @@ intercept_routine_wrapper:
 	beq	a1, t0, .Lunh_generic
 	addi	t0, t0, -1
 	beq	a1, t0, .Lunh_clone
-
-	// unmatched values of a0/a1 imply that ecall was executed, fail-safe
-	j	.Lhandled
+	/*
+	 * Execution falls through to .Lhandled because unmatched values in a0/a1 imply that the
+	 * kernel executed a syscall. See intercept.c for descriptions of the UNH_* macros.
+	 * intercept_routine() indicates that syscall execution was skipped by setting a0 to
+	 * UNH_SYSCALL and a1 to either UNH_GENERIC or UNH_CLONE. Any other values indicate
+	 * that a syscall was executed by the kernel.
+	 * NOTE: No instructions should be placed between the branches above and the
+	 *       .Lhandled symbol, as this gap is treated as a fallthrough. Or, uncomment
+	 *       the j instruction below before adding any new instructions.
+	 */
+	//j	.Lhandled
 
 .Lhandled:
 	// store results of ecall by replacing old a0/a1 on the stack
