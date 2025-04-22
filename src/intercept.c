@@ -586,72 +586,87 @@ xabort_on_syserror(long syscall_result, const char *msg)
 		xabort_errno(syscall_error_code(syscall_result), msg);
 }
 
+
+static inline __attribute__((section(".text.irqentry"))) int64_t
+binary_search(const struct patch_desc *items, uint32_t count, uint64_t ret_addr)
+{
+	// preserve last hit as a tiny "cache"
+	static uint32_t mid = 0;
+	uint32_t low = 0;
+	uint32_t high = count - 1;
+
+	do {
+		if ((uint64_t)items[mid].return_address == ret_addr)
+			return mid;
+		else if ((uint64_t)items[mid].return_address < ret_addr)
+			low = mid + 1;
+		else
+			high = mid - 1;
+
+		mid = (low + high) / 2;
+	} while (low <= high);
+
+	return -1;
+}
+
 /*
- * When patch comes to asm_entry_point (intercept_irq_entry.S), one of
- * the first thing it does is finding "identity" of a patch by using
- * it's uniqe return address.
+ * When a patch comes to asm_entry_point (intercept_irq_entry.S), one of the
+ * first things done is to find its "identity" using its unique return address.
  */
 __attribute__((section(".text.irqentry"))) struct wrapper_ret
-detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr,
-			uint64_t GW_ret_addr)
+detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_addr)
 {
-	struct patch_desc *patch = NULL;
-	// sign-extend syscall_num to register size
-	int64_t syscall_num = INT64_MIN;
-	uint64_t reloc_addr = 0;
-	uint64_t ret_addrs[3] = {MID_ret_addr, SML_ret_addr, GW_ret_addr};
-	uint8_t ra_idx = 0;
+	const uint64_t check_ret_addrs[3] = {MID_ret_addr, SML_ret_addr, GW_ret_addr};
 
-	for (; ra_idx < sizeof(ret_addrs); ++ra_idx) {
+	for (uint8_t ra_idx = 0; ra_idx < sizeof(check_ret_addrs); ++ra_idx) {
+		uint64_t ra = check_ret_addrs[ra_idx];
 		for (uint32_t o = 0; o < objs_count; ++o) {
-			for (uint32_t p = 0; p < objs[o].count; ++p) {
+			// check if current obj contains the return address
+			if (ra < (uint64_t)objs[o].text_start || ra > (uint64_t)objs[o].text_end)
+				continue;
 
-				patch = objs[o].items + p;
-				uint64_t ret_addr = (uint64_t)patch->return_address;
-				syscall_num = patch->syscall_num;
-				reloc_addr = (uint64_t)patch->relocation_address;
+			int64_t match_idx = binary_search(objs[o].items, objs[o].count, ra);
+			if (match_idx >= 0) {
+				const struct patch_desc *patch = objs[o].items + match_idx;
+				int64_t sn = (int64_t)patch->syscall_num;
+				int64_t reloc_addr = (int64_t)patch->relocation_address;
 
-				if (ret_addr == ret_addrs[ra_idx]) {
-					switch (syscall_num) {
-					case TYPE_GW:
-						if (ra_idx == 2)
-							goto ret_to_irq_entry;
-						break;
-					case TYPE_MID:
-						if (ra_idx == 0)
-							goto ret_to_irq_entry;
-						break;
-					default: // TYPE_SML
-						if (ra_idx == 1)
-							goto ret_to_irq_entry;
-						break;
-					}
+				switch (sn) {
+				case TYPE_GW:
+					if (ra_idx == 2)
+						return (struct wrapper_ret){sn, reloc_addr};
+					break;
+				case TYPE_MID:
+					if (ra_idx == 0)
+						return (struct wrapper_ret){sn, reloc_addr};
+					break;
+				default: // TYPE_SML
+					if (ra_idx == 1)
+						return (struct wrapper_ret){sn, reloc_addr};
+					break;
 				}
 			}
+			break;
 		}
 	}
-ret_to_irq_entry:
 
-	if (ra_idx >= sizeof(ret_addrs))
-		xabort("Failed to identify patch");
-
-	return (struct wrapper_ret){.a0 = syscall_num, .a1 = reloc_addr};
+	xabort("detect_cur_patch: failed to identify patch");
 }
 
 static inline __attribute__((section(".text.irqentry"))) struct patch_desc *
-get_cur_patch(int64_t return_address)
+get_cur_patch(uint64_t return_address)
 {
-	struct patch_desc *patch = NULL;
-
 	for (uint32_t o = 0; o < objs_count; ++o) {
-		for (uint32_t p = 0; p < objs[o].count; ++p) {
-			patch = objs[o].items + p;
-			if ((int64_t)patch->return_address == return_address)
-				break;
-		}
+		if (return_address < (uint64_t)objs[o].text_start ||
+				return_address > (uint64_t)objs[o].text_end)
+			continue;
+
+		int64_t match_idx = binary_search(objs[o].items, objs[o].count, return_address);
+		if (match_idx >= 0)
+			return objs[o].items + match_idx;
 	}
 
-	return patch;
+	xabort("get_cur_patch: failed to identify patch");
 }
 
 __attribute__((section(".text.irqentry"))) void

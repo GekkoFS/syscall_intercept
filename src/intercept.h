@@ -147,7 +147,7 @@ struct intercept_desc {
 	 * delta between vmem addresses and addresses in symbol tables,
 	 * non-zero for dynamic objects
 	 */
-	unsigned char *base_addr;
+	uint8_t *base_addr;
 
 	/* where the object is in fs */
 	const char *path;
@@ -168,17 +168,17 @@ struct intercept_desc {
 	struct section_list rela_tables;
 
 	/* Where the text starts inside the shared object */
-	unsigned long text_offset;
+	uint64_t text_offset;
 
 	/*
 	 * Where the text starts and ends in the virtual memory seen by the
 	 * current process.
 	 */
-	unsigned char *text_start;
-	unsigned char *text_end;
+	uint8_t *text_start;
+	uint8_t *text_end;
 
 	struct patch_desc *items;
-	unsigned count;
+	uint32_t count;
 
 	uint8_t *jump_table;
 
