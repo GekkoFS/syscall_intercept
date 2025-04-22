@@ -38,7 +38,7 @@
 #include "patch_offsets.h"
 
 	/* Constants */
-	// the final size is determined in runtime, but this is the minimum size
+	// relocation space size, increase it if needed
 	.equ	RELOCATION_SIZE, 0x20000
 	// NOTE: align this to 16, (NR_GPR + NR_FPR) * 8 % 16 == 0
 	.equ	NR_GPR, 32
@@ -265,10 +265,6 @@
 	.endm
 
 
-	/* Patched instruction space */
-	.global	asm_relocation_space
-	.hidden	asm_relocation_space
-
 	/* The function where patches jump to */
 	.global	asm_entry_point
 	.hidden	asm_entry_point
@@ -310,16 +306,12 @@
 	.hidden	intercept_routine_post_clone
 	.type	intercept_routine_post_clone, @function
 
-
-	.section .text.relocation, "ax"
-	.align	12, 0
-asm_relocation_space:
-	.space	RELOCATION_SIZE, 0
-	.size	asm_relocation_space, . - asm_relocation_space
+	/* Patched instruction space */
+	.global	asm_relocation_space
+	.hidden	asm_relocation_space
 
 
 	.section .text.irqentry, "ax"
-	.align	12, 0
 asm_entry_point:
 	.cfi_startproc
 	/*********************************************************************
@@ -670,12 +662,17 @@ intercept_routine_wrapper:
 	.size	intercept_routine_wrapper, . - intercept_routine_wrapper
 
 
+asm_relocation_space:
+	.space	RELOCATION_SIZE, 0
+	.size	asm_relocation_space, . - asm_relocation_space
+
+
 	.section .data
 	.align	3
 	.global	asm_relocation_space_size
 	.hidden	asm_relocation_space_size
 asm_relocation_space_size:
-	.8byte	asm_entry_point - asm_relocation_space
+	.8byte	RELOCATION_SIZE
 	/*
 	 * Natural alignment (alignment follows the symbol size) is crucial for
 	 * atomic instructions. Misalignment causes the address-misaligned or

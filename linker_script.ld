@@ -1,12 +1,8 @@
 SECTIONS
 {
-	.text.relocation :
-	{
-		*(.text.relocation)
-	}
-	.text.irqentry :
+	.text.irqentry : ALIGN(0x1000)
 	{
 		*(.text.irqentry)
 	}
 }
-INSERT AFTER .text;
+INSERT BEFORE .text;

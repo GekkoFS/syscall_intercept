@@ -125,6 +125,7 @@ debug_dump(const char *fmt, ...)
 	syscall_no_intercept(SYS_write, 2, buf, len);
 }
 
+static bool logging_enabled;
 static void log_header(void);
 
 
@@ -430,14 +431,14 @@ extern uint64_t asm_relocation_space_size;
 
 /*
  * Enable/disable writing on relocation space (intercept_irq_entry.S).
- * NOTE: this function expect asm_relocation_space to be align to
- *       PAGE_SIZE (12 bits) boundery.
  */
 static void
 write_enable_asm_relocation_space(bool enable_write)
 {
 	int prot;
 	const char *err_msg;
+	uint8_t *start = round_down_address(asm_relocation_space);
+	uint64_t size = asm_relocation_space_size + (uint64_t)(asm_relocation_space - start);
 
 	if (enable_write) {
 		prot = PROT_READ | PROT_WRITE | PROT_EXEC;
@@ -449,8 +450,7 @@ write_enable_asm_relocation_space(bool enable_write)
 					(char *)(asm_relocation_space + asm_relocation_space_size));
 	}
 
-	mprotect_no_intercept(asm_relocation_space, asm_relocation_space_size,
-				prot, err_msg);
+	mprotect_no_intercept(start, size, prot, err_msg);
 }
 
 /*
@@ -468,6 +468,7 @@ static __attribute__((constructor)) void
 intercept(int argc, char **argv)
 {
 	(void) argc;
+	char *path = NULL;
 	cmdline = argv[0];
 	extern void init_tls_offset_table(void);
 
@@ -477,9 +478,12 @@ intercept(int argc, char **argv)
 	vdso_addr = (void *)(uintptr_t)getauxval(AT_SYSINFO_EHDR);
 	debug_dumps_on = getenv("INTERCEPT_DEBUG_DUMP") != NULL;
 	patch_all_objs = (getenv("INTERCEPT_ALL_OBJS") != NULL);
-	intercept_setup_log(getenv("INTERCEPT_LOG"),
-			getenv("INTERCEPT_LOG_TRUNC"));
-	log_header();
+	path = getenv("INTERCEPT_LOG");
+	logging_enabled = (path != NULL && path[0] != '\0');
+	if (logging_enabled) {
+		intercept_setup_log(path, getenv("INTERCEPT_LOG_TRUNC"));
+		log_header();
+	}
 
 	dl_iterate_phdr(analyze_object, NULL);
 	if (!libc_found)
@@ -587,7 +591,7 @@ xabort_on_syserror(long syscall_result, const char *msg)
  * the first thing it does is finding "identity" of a patch by using
  * it's uniqe return address.
  */
-struct wrapper_ret
+__attribute__((section(".text.irqentry"))) struct wrapper_ret
 detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr,
 			uint64_t GW_ret_addr)
 {
@@ -634,7 +638,7 @@ ret_to_irq_entry:
 	return (struct wrapper_ret){.a0 = syscall_num, .a1 = reloc_addr};
 }
 
-static struct patch_desc *
+static inline __attribute__((section(".text.irqentry"))) struct patch_desc *
 get_cur_patch(int64_t return_address)
 {
 	struct patch_desc *patch = NULL;
@@ -650,11 +654,14 @@ get_cur_patch(int64_t return_address)
 	return patch;
 }
 
-void
+__attribute__((section(".text.irqentry"))) void
 intercept_post_clone_log_syscall(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
-			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
+					int64_t a4, int64_t a5, int64_t a6, int64_t a7)
 {
-	struct patch_desc *patch = get_cur_patch(a6);
+	if (!logging_enabled)
+		return;
+
+	const struct patch_desc *patch = get_cur_patch(a6);
 
 	struct syscall_desc desc = {
 		.nr = (int)a7, /* ignore higher 32 bits */
@@ -675,7 +682,7 @@ intercept_post_clone_log_syscall(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
  * The routine called by an assembly wrapper when a clone syscall returns zero,
  * and a new stack pointer is used in the child thread.
  */
-void
+__attribute__((section(".text.irqentry"))) void
 intercept_routine_post_clone(int64_t a0)
 {
 	if (a0 == 0) {
@@ -718,13 +725,13 @@ intercept_routine_post_clone(int64_t a0)
  * rsp_in_asm_wrapper -- the stack pointer to restore after returning
  *  from this function.
  */
-struct wrapper_ret
+__attribute__((section(".text.irqentry"))) struct wrapper_ret
 intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
 {
 	struct wrapper_ret result = {.a0 = a0, .a1 = a1};
 	int forward_to_kernel = true;
-	struct patch_desc *patch = get_cur_patch(a6);
+	const struct patch_desc *patch = get_cur_patch(a6);
 	/*
 	 * The RISC-V version of this library doesn't rely on offsets, instead
 	 * ecall args get passed directly. It's more straightforward, and
@@ -743,7 +750,8 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 	if (handle_magic_syscalls(&desc, &result.a0) == 0)
 		return result;
 
-	intercept_log_syscall(patch, &desc, UNKNOWN, 0);
+	if (logging_enabled)
+		intercept_log_syscall(patch, &desc, UNKNOWN, 0);
 
 	if (intercept_hook_point != NULL)
 		forward_to_kernel = intercept_hook_point(desc.nr,
@@ -773,27 +781,20 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		 * the clone_child_intercept_routine instead, executing
 		 * it on the new child threads stack, then returns to libc.
 		 */
-		if (desc.nr == SYS_clone && (desc.args[1] != 0 ||
-				desc.args[0] & CLONE_VFORK)) {
-			return (struct wrapper_ret){.a0 = UNH_SYSCALL,
-							.a1 = UNH_CLONE};
-		}
+		if (desc.nr == SYS_clone && (desc.args[1] != 0 || desc.args[0] & CLONE_VFORK))
+			return (struct wrapper_ret){.a0 = UNH_SYSCALL, .a1 = UNH_CLONE};
 #ifdef SYS_clone3
-		else if (desc.nr == SYS_clone3 &&
-				((struct clone_args *)desc.args[0])->stack != 0) {
-			return (struct wrapper_ret){.a0 = UNH_SYSCALL,
-							.a1 = UNH_CLONE};
-		}
+		else if (desc.nr == SYS_clone3 && ((struct clone_args *)desc.args[0])->stack != 0)
+			return (struct wrapper_ret){.a0 = UNH_SYSCALL, .a1 = UNH_CLONE};
 #endif
-		else {
-			result = syscall_no_intercept(desc.nr,
-					desc.args[0],
-					desc.args[1],
-					desc.args[2],
-					desc.args[3],
-					desc.args[4],
-					desc.args[5]);
-		}
+
+		result = syscall_no_intercept(desc.nr,
+				desc.args[0],
+				desc.args[1],
+				desc.args[2],
+				desc.args[3],
+				desc.args[4],
+				desc.args[5]);
 
 		/*
 		 * For consistency among all clone variants, from the user's
@@ -810,7 +811,8 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 #endif
 	}
 
-	intercept_log_syscall(patch, &desc, KNOWN, result.a0);
+	if (logging_enabled)
+		intercept_log_syscall(patch, &desc, KNOWN, result.a0);
 
 	return result;
 }
