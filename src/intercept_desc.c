@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <errno.h>
 
 #include "intercept.h"
 #include "intercept_util.h"
@@ -532,6 +533,51 @@ get_min_address(void)
 	return min_address;
 }
 
+static uint8_t *
+get_guess(const uint8_t *text_start, uint8_t *guess)
+{
+	FILE *maps;
+	char line[0x2000];
+
+	if ((maps = fopen("/proc/self/maps", "r")) == NULL)
+		xabort("fopen /proc/self/maps");
+
+	while ((fgets(line, sizeof(line), maps)) != NULL) {
+		uint8_t *start;
+		uint8_t *end;
+
+		if (sscanf(line, "%p-%p", (void **)&start, (void **)&end) != 2)
+			xabort("sscanf from /proc/self/maps");
+
+		/*
+		 * Let's see if an existing mapping overlaps
+		 * with the guess!
+		 */
+		if (end < guess)
+			continue; /* No overlap, let's see the next mapping */
+
+		if (start >= guess + PAGE_SIZE) {
+			/* The rest of the mappings can't possibly overlap */
+			break;
+		}
+
+		/*
+		 * The next guess is the page following the mapping seen
+		 * just now.
+		 */
+		guess = end;
+
+		if (guess >= text_start + JUMP_2GB_POS_REACH) {
+			/* Too far away */
+			xabort("unable to find place for trampoline");
+		}
+	}
+
+	fclose(maps);
+
+	return guess;
+}
+
 /*
  * allocate_trampoline_table
  * Allocates memory close to a text section (close enough
@@ -551,11 +597,9 @@ allocate_trampoline(struct intercept_desc *desc)
 		return;
 	}
 
-	FILE *maps;
-	char line[0x2000];
-	unsigned char *guess; /* Where we would like to allocate the table */
+	uint8_t *guess; /* Where we would like to allocate the table */
 
-	if ((uintptr_t)desc->text_end < INT32_MAX) {
+	if ((uintptr_t)desc->text_end < (uintptr_t)-JUMP_2GB_NEG_REACH) {
 		/* start from the bottom of memory */
 		guess = (void *)0;
 	} else {
@@ -565,57 +609,32 @@ allocate_trampoline(struct intercept_desc *desc)
 		 * Round up to a memory page boundary, as this address must be
 		 * mappable.
 		 */
-		guess = desc->text_end - INT32_MAX;
-		guess = (unsigned char *)(((uintptr_t)guess)
+		guess = desc->text_end + JUMP_2GB_NEG_REACH;	// JUMP_2GB_NEG_REACH is a negative value
+		guess = (uint8_t *)(((uintptr_t)guess)
 				& ~((uintptr_t)(0xfff))) + 0x1000;
 	}
 
 	if ((uintptr_t)guess < get_min_address())
 		guess = (void *)get_min_address();
 
-	if ((maps = fopen("/proc/self/maps", "r")) == NULL)
-		xabort("fopen /proc/self/maps");
+	// Give mmap() 4 attempts because of MAP_FIXED_NOREPLACE
+	for (uint8_t i = 0; i < 4; ++i) {
+		guess = get_guess(desc->text_start, guess);
+		desc->trampoline_address = mmap(guess, TRAMPOLINE_SIZE,
+						PROT_READ | PROT_WRITE | PROT_EXEC,
+						MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANON,
+						-1, 0);
 
-	while ((fgets(line, sizeof(line), maps)) != NULL) {
-		unsigned char *start;
-		unsigned char *end;
-
-		if (sscanf(line, "%p-%p", (void **)&start, (void **)&end) != 2)
-			xabort("sscanf from /proc/self/maps");
-
-		/*
-		 * Let's see if an existing mapping overlaps
-		 * with the guess!
-		 */
-		if (end < guess)
-			continue; /* No overlap, let's see the next mapping */
-
-		if (start >= guess + TRAMPOLINE_SIZE) {
-			/* The rest of the mappings can't possibly overlap */
+		// retry when range collide with an existing mapping
+		if (desc->trampoline_address == MAP_FAILED && errno != EEXIST) {
+			xabort("unable to allocate space for trampoline");
+		// verify the returned address for backward-compatible (Linux < v4.17)
+		} else if (desc->trampoline_address != guess) {
+			munmap(desc->trampoline_address, TRAMPOLINE_SIZE);
+		} else {
 			break;
 		}
-
-		/*
-		 * The next guess is the page following the mapping seen
-		 * just now.
-		 */
-		guess = end;
-
-		if (guess >= desc->text_start + JUMP_2GB_POS_REACH) {
-			/* Too far away */
-			xabort("unable to find place for trampoline");
-		}
 	}
-
-	fclose(maps);
-
-	desc->trampoline_address = mmap(guess, TRAMPOLINE_SIZE,
-					PROT_READ | PROT_WRITE | PROT_EXEC,
-					MAP_FIXED | MAP_PRIVATE | MAP_ANON,
-					-1, 0);
-
-	if (desc->trampoline_address == MAP_FAILED)
-		xabort("unable to allocate space for trampoline");
 
 	__builtin___clear_cache((char *)guess, (char *)(guess + TRAMPOLINE_SIZE));
 }
