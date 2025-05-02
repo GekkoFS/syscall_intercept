@@ -153,6 +153,15 @@ if(HAS_NOUNUSEDARG)
 		PRIVATE "-Wno-unused-command-line-argument")
 endif()
 
+# By default, magic_syscalls are not handled
+if(NOT WITH_MAGIC_SYSCALLS)
+	target_compile_definitions(syscall_intercept_base_c PUBLIC
+					SYSCALL_INTERCEPT_WITHOUT_MAGIC_SYSCALLS=1)
+	# magic_syscalls.c will be empty TU, disable compiler warning for it
+	set_source_files_properties(src/magic_syscalls.c PROPERTIES
+					COMPILE_OPTIONS "-Wno-pedantic")
+endif()
+
 set_property(TARGET syscall_intercept_base_c
 	APPEND PROPERTY COMPILE_FLAGS ${capstone_CFLAGS})
 

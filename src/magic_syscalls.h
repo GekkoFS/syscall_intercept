@@ -104,7 +104,7 @@ magic_syscall_stop_log(void)
 }
 
 static inline int
-handle_magic_syscalls(struct syscall_desc *desc, long *result);
+handle_magic_syscalls(struct syscall_desc *desc, long *result)
 {
 	(void) result;
 	(void) desc;
