@@ -515,11 +515,9 @@ static void
 log_header(void)
 {
 	static const char self_decoder[] =
-		"tempfile=$(mktemp) ; tempfile2=$(mktemp) ; "
-		"grep \"^/\" $0 | cut -d \" \" -f 1,2 | "
-		"sed \"s/^/addr2line -p -f -e /\" > $tempfile ; "
-		"{ echo ; . $tempfile ; echo ; } > $tempfile2 ; "
-		"paste $tempfile2 $0 ; exit 0\n";
+		"awk 'BEGIN {print \"printf \\\"\\\\e[1;32m$USER\\\\e[33m$\\\\e[m\\n\\\"\"}"
+		" /^\\// {if ($1 != prev) {printf \"\\naddr2line -p -f -e %s\", $1; "
+		"prev = $1} printf \" %s\", $2}' $0 | bash | paste - $0; exit\n";
 
 	intercept_log(self_decoder, sizeof(self_decoder) - 1);
 }
