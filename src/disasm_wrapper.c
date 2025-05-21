@@ -233,9 +233,12 @@ check_jump(struct intercept_disasm_result *result, struct cs_insn *insn,
 	uint8_t op_c = insn->detail->riscv.op_count;
 	cs_riscv_op *ops = insn->detail->riscv.operands;
 
-	if (insn->id == RISCV_INS_JALR || insn->id == RISCV_INS_C_JALR ||
-			insn->id == RISCV_INS_C_JR) {
+	if (insn->id == RISCV_INS_JALR) {
 		result->is_abs_jump = true;
+#ifdef __riscv_c
+	} else if (insn->id == RISCV_INS_C_JALR || insn->id == RISCV_INS_C_JR) {
+		result->is_abs_jump = true;
+#endif
 	} else if (ops[op_c - 1].type == RISCV_OP_IMM) {
 		result->has_ip_relative_opr = true;
 		result->rip_ref_addr = code + ops[op_c - 1].imm;
