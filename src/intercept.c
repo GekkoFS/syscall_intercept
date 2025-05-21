@@ -589,9 +589,9 @@ static inline __attribute__((section(".text.irqentry"))) int64_t
 binary_search(const struct patch_desc *items, uint32_t count, uint64_t ret_addr)
 {
 	// preserve last hit as a tiny "cache"
-	static uint32_t mid = 0;
-	uint32_t low = 0;
-	uint32_t high = count - 1;
+	static int64_t mid = 0;
+	int64_t low = 0;
+	int64_t high = count - 1;
 
 	do {
 		if ((uint64_t)items[mid].return_address == ret_addr)
