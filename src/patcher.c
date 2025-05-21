@@ -240,17 +240,17 @@ check_surrounding_instructions(struct intercept_desc *desc,
 
 	for (uint8_t i = 0; i < instrs_num; ++i) {
 		if (i < syscall_idx) {
-			if (instrs[i].a7_set > -1)
-				patch->syscall_num = instrs[i].a7_set;
-			else if (instrs[i].is_a7_modified)
-				patch->syscall_num = -1;
-
 			if (has_jump(desc, instrs[i + 1].address)) {
 				patch_start_idx = i + 1;
 				patch->syscall_num = -1;
 			} else if (!is_copiable_before_syscall(instrs[i])) {
 				patch_start_idx = i + 1;
 			}
+
+			if (instrs[i].a7_set > -1)
+				patch->syscall_num = instrs[i].a7_set;
+			else if (instrs[i].is_a7_modified)
+				patch->syscall_num = -1;
 		} else if (i > syscall_idx) {
 			if (instrs[i].is_syscall) {
 				patch_end_idx = check_two_ecalls(patch,
