@@ -73,7 +73,7 @@ open_orig_file(const struct intercept_desc *desc)
 
 	fd = syscall_no_intercept(SYS_openat, AT_FDCWD, desc->path, O_RDONLY);
 
-	xabort_on_syserror(fd, __func__);
+	xabort_on_syserror(fd, __func__, NULL);
 
 	return fd;
 }
@@ -87,7 +87,7 @@ add_table_info(struct section_list *list, const Elf64_Shdr *header)
 		list->headers[list->count] = *header;
 		list->count++;
 	} else {
-		xabort("allocated section_list exhausted");
+		xabort(__func__, "allocated section_list exhausted");
 	}
 }
 
@@ -153,7 +153,7 @@ find_sections(struct intercept_desc *desc, int fd)
 	}
 
 	if (!text_section_found)
-		xabort("text section not found");
+		xabort(__func__, "text section not found");
 }
 
 /*
@@ -540,14 +540,14 @@ get_guess(const uint8_t *text_start, uint8_t *guess)
 	char line[0x2000];
 
 	if ((maps = fopen("/proc/self/maps", "r")) == NULL)
-		xabort("fopen /proc/self/maps");
+		xabort(__func__, "fopen /proc/self/maps");
 
 	while ((fgets(line, sizeof(line), maps)) != NULL) {
 		uint8_t *start;
 		uint8_t *end;
 
 		if (sscanf(line, "%p-%p", (void **)&start, (void **)&end) != 2)
-			xabort("sscanf from /proc/self/maps");
+			xabort(__func__, "sscanf from /proc/self/maps");
 
 		/*
 		 * Let's see if an existing mapping overlaps
@@ -569,7 +569,7 @@ get_guess(const uint8_t *text_start, uint8_t *guess)
 
 		if (guess >= text_start + JUMP_2GB_POS_REACH) {
 			/* Too far away */
-			xabort("unable to find place for trampoline");
+			xabort(__func__, "unable to find place for trampoline");
 		}
 	}
 
@@ -627,7 +627,7 @@ allocate_trampoline(struct intercept_desc *desc)
 
 		// retry when range collide with an existing mapping
 		if (desc->trampoline_address == MAP_FAILED && errno != EEXIST) {
-			xabort("unable to allocate space for trampoline");
+			xabort_errno(errno, __func__, strerror_no_intercept(errno));
 		// verify the returned address for backward-compatible (Linux < v4.17)
 		} else if (desc->trampoline_address != guess) {
 			munmap(desc->trampoline_address, TRAMPOLINE_SIZE);

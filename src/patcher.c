@@ -319,7 +319,7 @@ find_GW(struct intercept_desc *desc, struct patch_desc *patch)
 	}
 
 	if (patch_i >= desc->count)
-		xabort("find_GW: no Gateways in reach");
+		xabort(__func__, "no Gateways in reach");
 
 	// offsetting TYPE_MID to skip `addi sp, sp, -PATCH_SP_OFF`
 	if (patch->syscall_num == TYPE_MID)
@@ -634,7 +634,7 @@ create_patch(struct intercept_desc *desc)
 				patch->syscall_offset);
 
 			intercept_log(buffer, (size_t)l);
-			xabort("not enough space for patching around syscall");
+			xabort(__func__, "not enough space for patching around syscall");
 		}
 
 		position_patch(patch);
@@ -647,7 +647,7 @@ create_patch(struct intercept_desc *desc)
 		mark_jump(desc, last_instr_addr);
 
 		if (is_asm_relocation_space_full(MAX_RELOC_PATCH_SIZE(patch->patch_size_bytes)))
-			xabort("create_patch: insufficient relocation space, increase "
+			xabort(__func__, "insufficient relocation space, increase "
 				"RELOCATION_SIZE constant inside of intercept_irq_entry.S");
 
 		relocate_instrs(patch);
@@ -723,8 +723,8 @@ copy_GW(struct intercept_desc *desc, const struct patch_desc *patch)
 					jalr_addr, destination);
 	// if rvp_jump_GW() fails, it implies `INTERCEPT_NO_TRAMPOLINE=1`
 	if (size == 0)
-		xabort("copy_GW: libsyscall_intercept.so and the target library are "
-			"more than 2 GB apart.\nA trampoline must be used; unset the "
+		xabort(__func__, "libsyscall_intercept.so and the target library are "
+			"more than 2 GB apart. A trampoline must be used; unset the "
 			"INTERCEPT_NO_TRAMPOLINE environment variable.");
 	instrs_size += size;
 
@@ -845,7 +845,7 @@ activate_patches(struct intercept_desc *desc)
 
 		if (patch->dst_jmp_patch < desc->text_start ||
 		    patch->dst_jmp_patch > desc->text_end)
-			xabort("dst_jmp_patch outside text");
+			xabort(__func__, "dst_jmp_patch outside text");
 
 		switch (patch->syscall_num) {
 		case TYPE_GW:

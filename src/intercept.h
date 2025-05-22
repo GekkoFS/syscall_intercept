@@ -52,11 +52,11 @@ void debug_dump(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 #define INTERCEPTOR_EXIT_CODE 111
 
-__attribute__((noreturn)) void xabort_errno(int error_code, const char *msg);
+__attribute__((noreturn)) void xabort_errno(int error_code, const char *func, const char *msg);
 
-__attribute__((noreturn)) void xabort(const char *msg);
+__attribute__((noreturn)) void xabort(const char *func, const char *msg);
 
-void xabort_on_syserror(long syscall_result, const char *msg);
+void xabort_on_syserror(long syscall_result, const char *func, const char *msg);
 
 struct syscall_desc {
 	int nr;

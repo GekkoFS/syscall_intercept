@@ -329,7 +329,7 @@ should_patch_object(uintptr_t addr, const char *path)
 		extern uint8_t asm_relocation_space[];
 		Dl_info self;
 		if (!dladdr(asm_relocation_space, &self))
-			xabort("self dladdr failure");
+			xabort(__func__, "self dladdr failure");
 		self_addr = (uintptr_t)self.dli_fbase;
 	}
 
@@ -487,7 +487,7 @@ intercept(int argc, char **argv)
 
 	dl_iterate_phdr(analyze_object, NULL);
 	if (!libc_found)
-		xabort("libc not found");
+		xabort(__func__, "libc not found");
 
 	init_tls_offset_table();
 	write_enable_asm_relocation_space(true);
@@ -530,35 +530,64 @@ log_header(void)
  * If error_code is not zero, it is also printed.
  */
 void
-xabort_errno(int error_code, const char *msg)
+xabort_errno(int error_code, const char *func, const char *msg)
 {
-	static const char main_msg[] = " libsyscall_intercept error\n";
+	const char main_msg[] = "\033[3;35mlibsyscall_intercept\033[m: \033[1;31mERROR\033[m";
+	syscall_no_intercept(SYS_write, 2, main_msg, sizeof(main_msg) - 1);
+
+	if (error_code != 0) {
+		char buf[0x20] = " \033[33m(exit code ";
+		size_t len = 0;
+		char *end = ")\033[m";
+		char *ec_str = buf + sizeof(buf) - 1;
+
+		// strlen()
+		while (buf[len])
+			++len;
+
+		/* not using libc - inline sprintf */
+		*ec_str-- = '\0';
+		do {
+			*ec_str-- = (error_code % 10) + '0';
+			error_code /= 10;
+		} while (error_code != 0);
+
+		// strcat(), skip first because of previous extra decrement in while loop
+		while (*++ec_str)
+			buf[len++] = *ec_str;
+
+		// strcat()
+		while (*end)
+			buf[len++] = *end++;
+
+		syscall_no_intercept(SYS_write, 2, buf, len);
+	}
+
+	if (func != NULL) {
+		char start[] = ": \033[32m";
+		syscall_no_intercept(SYS_write, 2, start, sizeof(start) - 1);
+
+		size_t len = 0;
+		while (func[len])
+			++len;
+		syscall_no_intercept(SYS_write, 2, func, len);
+
+		char end[] = "()\033[m";
+		syscall_no_intercept(SYS_write, 2, end, sizeof(end) - 1);
+	}
 
 	if (msg != NULL) {
-		/* not using libc - inline strlen */
+		char start[] = ": ";
+		syscall_no_intercept(SYS_write, 2, start, sizeof(start) - 1);
+
 		size_t len = 0;
-		while (msg[len] != '\0')
+		while (msg[len])
 			++len;
 		syscall_no_intercept(SYS_write, 2, msg, len);
 	}
 
-	if (error_code != 0) {
-		char buf[0x10];
-		size_t len = 1;
-		char *c = buf + sizeof(buf) - 1;
+	syscall_no_intercept(SYS_write, 2, "\n", 1);
 
-		/* not using libc - inline sprintf */
-		do {
-			*c-- = (error_code % 10) + '0';
-			++len;
-			error_code /= 10;
-		} while (error_code != 0);
-		*c = ' ';
-
-		syscall_no_intercept(SYS_write, 2, c, len);
-	}
-
-	syscall_no_intercept(SYS_write, 2, main_msg, sizeof(main_msg) - 1);
 	syscall_no_intercept(SYS_exit_group, 1);
 
 	__builtin_unreachable();
@@ -568,9 +597,9 @@ xabort_errno(int error_code, const char *msg)
  * xabort - print a message to stderr, and exit the process.
  */
 void
-xabort(const char *msg)
+xabort(const char *func, const char *msg)
 {
-	xabort_errno(0, msg);
+	xabort_errno(0, func, msg);
 }
 
 /*
@@ -578,10 +607,10 @@ xabort(const char *msg)
  * and calls xabort_errno if the said return value indicates an error.
  */
 void
-xabort_on_syserror(long syscall_result, const char *msg)
+xabort_on_syserror(long syscall_result, const char *func, const char *msg)
 {
 	if (syscall_error_code(syscall_result) != 0)
-		xabort_errno(syscall_error_code(syscall_result), msg);
+		xabort_errno(syscall_error_code(syscall_result), func, msg);
 }
 
 
@@ -648,7 +677,7 @@ detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_a
 		}
 	}
 
-	xabort("detect_cur_patch: failed to identify patch");
+	xabort(__func__, "failed to identify patch");
 }
 
 static inline __attribute__((section(".text.irqentry"))) struct patch_desc *
@@ -664,7 +693,7 @@ get_cur_patch(uint64_t return_address)
 			return objs[o].items + match_idx;
 	}
 
-	xabort("get_cur_patch: failed to identify patch");
+	xabort(__func__, "failed to identify patch");
 }
 
 __attribute__((section(".text.irqentry"))) void
