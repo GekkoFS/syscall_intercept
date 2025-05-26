@@ -46,6 +46,14 @@
 #include "intercept.h"
 #include "intercept_util.h"
 #include "disasm_wrapper.h"
+#include "syscall_formats.h"
+
+
+// Used with environment variables INTERCEPT_SYS_INCLUDE and INTERCEPT_SYS_EXCLUDE
+static const char *filter_incl = NULL;
+static const char *filter_excl = NULL;
+static int32_t *sys_filter_ptr = NULL;
+
 
 /*
  * For simplicity, declare syscall_no_intercept() with return value 'long'
@@ -330,6 +338,121 @@ find_jumps_in_section_rela(struct intercept_desc *desc, Elf64_Shdr *section,
 	}
 }
 
+static void
+init_syscall_filter(void)
+{
+	const char *filter = NULL;
+	filter_incl = getenv("INTERCEPT_SYS_INCLUDE");
+	filter_excl = getenv("INTERCEPT_SYS_EXCLUDE");
+
+	if (filter_incl && filter_excl)
+		xabort(__func__, "INTERCEPT_SYS_INCLUDE and INTERCEPT_SYS_EXCLUDE "
+			"are mutually exclusive");
+	else if (filter_incl)
+		filter = filter_incl;
+	else if (filter_excl)
+		filter = filter_excl;
+	else
+		return;
+
+	if (filter[0] == '\0')
+		return;
+
+	// get the size of an input and the number of syscalls
+	size_t filter_len = 0;
+	size_t sys_num = 1;
+	for (; filter[filter_len]; ++filter_len)
+		if (filter[filter_len] == ',' && filter[filter_len+1] != ',')
+			++sys_num;
+
+	sys_filter_ptr = malloc(sizeof(int32_t) * (sys_num + 1));
+	int sys_i = 0;
+	char sys_str[0x100] = {0};
+	int sys_str_i = 0;
+	char *endptr;
+	errno = 0;
+
+	for (size_t i = 0; i <= filter_len; ++i) {
+		if (filter[i] == ',' || filter[i] == '\0') {
+			// repeated ',' or an input starts with it
+			if (sys_str_i == 0)
+				continue;
+
+			sys_str[sys_str_i] = '\0';
+			int32_t syscall_num = (int32_t)strtol(sys_str, &endptr, 10);
+
+			if (errno == ERANGE)
+				xabort_errno(ERANGE, __func__, strerror_no_intercept(ERANGE));
+			else if (*endptr == '\0')
+				sys_filter_ptr[sys_i] = syscall_num;
+			else if (!strncmp(sys_str, "SYS_", 4))
+				sys_filter_ptr[sys_i] = get_syscall_number(sys_str + 4);
+			else
+				sys_filter_ptr[sys_i] = get_syscall_number(sys_str);
+
+			if (sys_filter_ptr[sys_i] < 0)
+				xabort_errno(ENOENT, __func__, "Unknown syscall, "
+						"provide a syscall number instead of the name");
+
+			sys_str_i = 0;
+			++sys_i;
+		} else {
+			sys_str[sys_str_i++] = filter[i];
+		}
+	}
+
+	// mark end of input
+	sys_filter_ptr[sys_i] = -1;
+}
+
+/*
+ * is_not_filtered() uses has_jump() mostly to determine function boundaries.
+ * In contrast to patcher.c, which also uses has_jump() to drop the previous a7 value,
+ * the jump_table here is still incomplete.
+ * The accuracy of this static analysis could be jeopardized if the same ecall is used for
+ * different syscalls. For example, a7 gets set to SYS_read, the ecall executes, and afterward
+ * a7 gets set to SYS_write and jumps back to the same ecall instruction.
+ * This case (where the same ecall is reused by different system calls) is not found in glibc,
+ * and that's why filtering is done in this phase, where adding patch structs is being decided.
+ */
+static inline bool
+is_not_filtered(const struct intercept_desc *desc, const struct intercept_disasm_result *surr)
+{
+	if (!filter_incl && !filter_excl)
+		return true;
+
+	int32_t syscall_num = -1;
+
+	for (size_t i = 0; i < SYSCALL_IDX; ++i) {
+		if (has_jump(desc, surr[i].address))
+			syscall_num = -1;
+
+		if (surr[i].a7_set > -1)
+			syscall_num = surr[i].a7_set;
+		else if (surr[i].is_a7_modified)
+			syscall_num = -1;
+	}
+
+	if (syscall_num == -1)
+		return true;
+
+	for (size_t i = 0; sys_filter_ptr[i] != -1; ++i) {
+		if (sys_filter_ptr[i] == syscall_num)
+			return (bool)filter_incl;
+	}
+
+	return (bool)filter_excl;
+}
+
+static void
+free_syscall_filter(void)
+{
+	if (sys_filter_ptr) {
+		free(sys_filter_ptr);
+		sys_filter_ptr = NULL;
+	}
+}
+
 /*
  * has_pow2_count
  * Checks if the positive number of patches in a struct intercept_desc
@@ -426,23 +549,17 @@ fill_up_patch(struct intercept_desc *desc, struct patch_desc *patch,
 static void
 crawl_text(struct intercept_desc *desc)
 {
-	unsigned char *code = desc->text_start;
+	uint8_t *code = desc->text_start;
 
 	uint8_t instrs_num = SURROUNDING_INSTRS_NUM;
 
 	/*
-	 * Remember the previous three instructions, while
-	 * disassembling the code instruction by instruction in the
-	 * while loop below.
+	 * Store results of n surrounding instructions (SURROUNDING_INSTRS_NUM).
+	 * The RISC-V version of this library can patch any ecall, even if it
+	 * appears at the beginning or at the end of the .text section.
 	 */
 	struct intercept_disasm_result surr[SURROUNDING_INSTRS_NUM] = {{0}};
 
-	/*
-	 * How many previous instructions were decoded before this one,
-	 * and stored in the surr array. Usually three, except for the
-	 * beginning of the text section -- the first instruction naturally
-	 * has no previous instruction.
-	 */
 	struct intercept_disasm_context *context =
 	    intercept_disasm_init(desc->text_start, desc->text_end);
 
@@ -459,7 +576,7 @@ crawl_text(struct intercept_desc *desc)
 		if (result.has_ip_relative_opr)
 			mark_jump(desc, result.rip_ref_addr);
 
-		if (surr[SYSCALL_IDX].is_syscall) {
+		if (surr[SYSCALL_IDX].is_syscall && is_not_filtered(desc, surr)) {
 			struct patch_desc *patch = add_new_patch(desc);
 			fill_up_patch(desc, patch, surr, SYSCALL_IDX);
 		}
@@ -492,8 +609,10 @@ crawl_text(struct intercept_desc *desc)
 				sizeof(struct intercept_disasm_result));
 		}
 
-		struct patch_desc *patch = add_new_patch(desc);
-		fill_up_patch(desc, patch, surr, i);
+		if (is_not_filtered(desc, surr)) {
+			struct patch_desc *patch = add_new_patch(desc);
+			fill_up_patch(desc, patch, surr, i);
+		}
 	}
 
 	intercept_disasm_destroy(context);
@@ -678,5 +797,9 @@ find_syscalls(struct intercept_desc *desc)
 
 	syscall_no_intercept(SYS_close, fd);
 
+	init_syscall_filter();
+
 	crawl_text(desc);
+
+	free_syscall_filter();
 }

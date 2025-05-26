@@ -124,9 +124,23 @@ _INTERCEPT_HOOK_CMDLINE_FILTER_ -- When set, the library checks the command line
 
 _INTERCEPT_ALL_OBJS_ -- When set, all libraries are patched, not just _glibc_ and _pthread_. Note: The syscall\_intercept library and Capstone are never patched.
 
-*INTERCEPT_NO_TRAMPOLINE* -- When set, the trampoline is not used for jumping from the patched library to the syscall\_intercept library. In the RISC-V version of this library, the trampoline size is less than 30 bytes, requiring only one page of memory when allocated with `mmap()`. Consequently, setting this variable does not significantly reduce memory usage.
+_INTERCEPT_NO_TRAMPOLINE_ -- When set, the trampoline is not used for jumping from the patched library to the syscall\_intercept library. In the RISC-V version of this library, the trampoline size is less than 30 bytes, requiring only one page of memory when allocated with `mmap()`. Consequently, setting this variable does not significantly reduce memory usage.
 
-*INTERCEPT_DEBUG_DUMP* -- Enables verbose output.
+_INTERCEPT_DEBUG_DUMP_ -- Enables verbose output.
+
+#### RISC-V Only
+
+_INTERCEPT_SYS_INCLUDE_ -- Only patch specified comma-separated syscalls.
+
+_INTERCEPT_SYS_EXCLUDE_ -- Patch all but specified comma-separated syscalls.
+```bash
+# Patch only read, write, and clone3 syscalls
+$ INTERCEPT_SYS_INCLUDE=SYS_read,write,435 LD_PRELOAD=./example.so ./a.out
+
+# Patch all syscalls except for read, write, and clone3
+$ INTERCEPT_SYS_EXCLUDE=SYS_read,write,435 LD_PRELOAD=./example.so ./a.out
+```
+If a syscall is not defined in _syscall_formats.c_, the syscall number must be used instead.
 
 # Example
 
@@ -223,12 +237,12 @@ Before:                           After:
 b2d28 <__open>:                   b2d28 <__open>:
 ...                               ...
 b2dac: ld      a1,8(sp)           b2dac: ld      a1,8(sp)
-b2dae: ld      a3,0(sp)           b2dae: addi    sp, sp, -48    # GW start
-b2db0: mv      a2,s0              b2db0: sd      ra, 0(sp)
-b2db2: li      a7,56              b2db2: auipc   ra, offset
-b2db6: li      a0,-100            b2db6: jalr    ra, offset(ra)
-b2dba: ecall                      b2dba: ld      ra, 0(sp)
-b2dbe: lui     a4,0xfffff         b2dbc: addi    sp, sp, 48     # GW end
+b2dae: ld      a3,0(sp)           b2dae: addi    sp,sp, -48    # GW start
+b2db0: mv      a2,s0              b2db0: sd      ra,0(sp)
+b2db2: li      a7,56              b2db2: auipc   ra,offset
+b2db6: li      a0,-100            b2db6: jalr    ra,offset(ra)
+b2dba: ecall                      b2dba: ld      ra,0(sp)
+b2dbe: lui     a4,0xfffff         b2dbc: addi    sp,sp, 48     # GW end
 ...                               b2dbe: lui     a4,0xfffff
 ...                               ...
 ```

@@ -319,7 +319,8 @@ find_GW(struct intercept_desc *desc, struct patch_desc *patch)
 	}
 
 	if (patch_i >= desc->count)
-		xabort(__func__, "no Gateways in reach");
+		xabort(__func__, "no Gateways in reach; if INTERCEPT_SYS_INCLUDE "
+				"was used, include more syscalls to find a GW");
 
 	// offsetting TYPE_MID to skip `addi sp, sp, -PATCH_SP_OFF`
 	if (patch->syscall_num == TYPE_MID)
