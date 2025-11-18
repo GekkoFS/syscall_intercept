@@ -91,6 +91,13 @@
 
 #include <stdio.h>
 
+#define MAX_RELOC_PATCH_SIZE(patch_size)	(patch_size + MAX_PC_INS_SIZE * 15 - ECALL_INS_SIZE)
+
+
+extern uint8_t asm_relocation_space[];
+extern uint64_t asm_relocation_space_size;
+static uint8_t *cur_asm_relocation_space = asm_relocation_space;
+
 /*
  * While executing patched instructions, these global variables are used in the
  * relocation space (intercept_irq_entry) in case the patched instructions use
@@ -116,6 +123,13 @@ init_tls_offset_table(void)
 		(uintptr_t)&asm_ra_orig - tp_addr;
 	tls_offset_table.asm_ra_temp =
 		(uintptr_t)&asm_ra_temp - tp_addr;
+}
+
+static bool
+is_asm_relocation_space_full(uint8_t curr_patch_size)
+{
+	return (uint64_t)(cur_asm_relocation_space - asm_relocation_space) >
+		asm_relocation_space_size - curr_patch_size;
 }
 
 /*
@@ -226,17 +240,17 @@ check_surrounding_instructions(struct intercept_desc *desc,
 
 	for (uint8_t i = 0; i < instrs_num; ++i) {
 		if (i < syscall_idx) {
-			if (instrs[i].a7_set > -1)
-				patch->syscall_num = instrs[i].a7_set;
-			else if (instrs[i].is_a7_modified)
-				patch->syscall_num = -1;
-
 			if (has_jump(desc, instrs[i + 1].address)) {
 				patch_start_idx = i + 1;
 				patch->syscall_num = -1;
 			} else if (!is_copiable_before_syscall(instrs[i])) {
 				patch_start_idx = i + 1;
 			}
+
+			if (instrs[i].a7_set > -1)
+				patch->syscall_num = instrs[i].a7_set;
+			else if (instrs[i].is_a7_modified)
+				patch->syscall_num = -1;
 		} else if (i > syscall_idx) {
 			if (instrs[i].is_syscall) {
 				patch_end_idx = check_two_ecalls(patch,
@@ -279,26 +293,34 @@ check_surrounding_instructions(struct intercept_desc *desc,
 static void
 find_GW(struct intercept_desc *desc, struct patch_desc *patch)
 {
-	// TYPE_MID and TYPE_SML jump address and offset (TYPE_MID)
+	uint32_t patch_i;
+	ptrdiff_t dst;
 	const uint8_t *jump_from;
+
+	// TYPE_MID and TYPE_SML jump address and offset (TYPE_MID)
 	if (patch->syscall_num == TYPE_MID)
 		jump_from = patch->return_address - JAL_INS_SIZE -
 				MODIFY_SP_INS_SIZE;
 	else // TYPE_SML
 		jump_from = patch->return_address - JAL_INS_SIZE;
 
-	for (uint32_t patch_i = 0; patch_i < desc->count; ++patch_i) {
+	for (patch_i = 0; patch_i < desc->count; ++patch_i) {
 		struct patch_desc *patch_GW = desc->items + patch_i;
 
 		// not a TYPE_GW, skip
 		if (patch_GW->syscall_num != TYPE_GW)
 			continue;
 
-		if (labs(patch_GW->dst_jmp_patch - jump_from) < JAL_AVG_REACH) {
+		dst = patch_GW->dst_jmp_patch - jump_from;
+		if (JAL_NEG_REACH <= dst && dst <= JAL_POS_REACH) {
 			patch->dst_jmp_patch = patch_GW->dst_jmp_patch;
 			break;
 		}
 	}
+
+	if (patch_i >= desc->count)
+		xabort(__func__, "no Gateways in reach; if INTERCEPT_SYS_INCLUDE "
+				"was used, include more syscalls to find a GW");
 
 	// offsetting TYPE_MID to skip `addi sp, sp, -PATCH_SP_OFF`
 	if (patch->syscall_num == TYPE_MID)
@@ -416,7 +438,7 @@ align_start_addr_and_size(struct patch_desc *patch,
 #endif
 
 static void
-load_orig_ra_temp(uint8_t **dst)
+load_orig_ra_temp(void)
 {
 	uint8_t instrs_buff[MAX_PC_INS_SIZE * 2];
 	uint8_t instrs_size = 0;
@@ -426,12 +448,12 @@ load_orig_ra_temp(uint8_t **dst)
 	instrs_size += rvpc_ld(instrs_buff + instrs_size, REG_RA, REG_TP,
 				(int32_t)tls_offset_table.asm_ra_orig);
 
-	memcpy(*dst, instrs_buff, instrs_size);
-	*dst += instrs_size;
+	memcpy(cur_asm_relocation_space, instrs_buff, instrs_size);
+	cur_asm_relocation_space += instrs_size;
 }
 
 static void
-store_new_ra_temp(uint8_t **dst)
+store_new_ra_temp(void)
 {
 	uint8_t instrs_buff[MAX_PC_INS_SIZE * 2];
 	uint8_t instrs_size = 0;
@@ -441,24 +463,24 @@ store_new_ra_temp(uint8_t **dst)
 	instrs_size += rvpc_ld(instrs_buff + instrs_size, REG_RA, REG_TP,
 				(int32_t)tls_offset_table.asm_ra_temp);
 
-	memcpy(*dst, instrs_buff, instrs_size);
-	*dst += instrs_size;
+	memcpy(cur_asm_relocation_space, instrs_buff, instrs_size);
+	cur_asm_relocation_space += instrs_size;
 }
 
 static void
-copy_jump(uint8_t **dst, uint8_t rd, uint8_t rs, int16_t offset)
+copy_jump(uint8_t rd, uint8_t rs, int16_t offset)
 {
 	uint8_t instr_buff[MAX_PC_INS_SIZE];
 	uint8_t instr_size;
 
 	instr_size = rvpc_jalr(instr_buff, rd, rs, offset);
 
-	memcpy(*dst, instr_buff, instr_size);
-	*dst += instr_size;
+	memcpy(cur_asm_relocation_space, instr_buff, instr_size);
+	cur_asm_relocation_space += instr_size;
 }
 
 static void
-finalize_and_jump_back(uint8_t **dst, struct patch_desc *patch)
+finalize_and_jump_back(struct patch_desc *patch)
 {
 	uint8_t instrs_buff[MAX_PC_INS_SIZE * 5];
 	uint8_t instrs_size = 0;
@@ -511,14 +533,14 @@ finalize_and_jump_back(uint8_t **dst, struct patch_desc *patch)
 	// copy the jump instruction to return to glibc
 	instrs_size += rvpc_jalr(instrs_buff + instrs_size, REG_ZERO, ret_reg, 0);
 
-	memcpy(*dst, instrs_buff, instrs_size);
-	*dst += instrs_size;
+	memcpy(cur_asm_relocation_space, instrs_buff, instrs_size);
+	cur_asm_relocation_space += instrs_size;
 }
 
 static void
-relocate_instrs(struct patch_desc *patch, uint8_t **dst)
+relocate_instrs(struct patch_desc *patch)
 {
-	patch->relocation_address = *dst;
+	patch->relocation_address = cur_asm_relocation_space;
 
 	uint8_t *start_addr = patch->dst_jmp_patch;
 	size_t patch_size = patch->patch_size_bytes;
@@ -529,44 +551,44 @@ relocate_instrs(struct patch_desc *patch, uint8_t **dst)
 	align_start_addr_and_size(patch, &start_addr, &patch_size);
 #endif
 	if (patch->is_ra_used_before)
-		load_orig_ra_temp(dst);
+		load_orig_ra_temp();
 
 	/* copy patched instructions before ecall */
 	before_ecall_size = patch->syscall_addr - start_addr;
-	memcpy(*dst, start_addr, before_ecall_size);
-	*dst += before_ecall_size;
+	memcpy(cur_asm_relocation_space, start_addr, before_ecall_size);
+	cur_asm_relocation_space += before_ecall_size;
 
 	if (patch->is_ra_used_before)
-		store_new_ra_temp(dst);
+		store_new_ra_temp();
 
 	/*
 	 * the instructions before ecall are copied,
 	 * copy jump instruction to go back to asm_entry_point
 	 */
-	copy_jump(dst, REG_RA, REG_RA, 0);
+	copy_jump(REG_RA, REG_RA, 0);
 
 	/* copy patched instructions after ecall */
 	after_ecall_size = patch_size - before_ecall_size - ECALL_INS_SIZE;
 	if (after_ecall_size > 0) {
 		if (patch->is_ra_used_after)
-			load_orig_ra_temp(dst);
+			load_orig_ra_temp();
 
-		memcpy(*dst, patch->syscall_addr + ECALL_INS_SIZE,
+		memcpy(cur_asm_relocation_space, patch->syscall_addr + ECALL_INS_SIZE,
 			after_ecall_size);
-		*dst += after_ecall_size;
+		cur_asm_relocation_space += after_ecall_size;
 
 		if (patch->is_ra_used_after)
-			store_new_ra_temp(dst);
+			store_new_ra_temp();
 	}
 
 	/*
 	 * the instructions after ecall are copied,
 	 * copy jump instruction to return to asm_entry_point
 	 */
-	copy_jump(dst, REG_RA, REG_RA, 0);
+	copy_jump(REG_RA, REG_RA, 0);
 
 	/* prepare for jump and go back to glibc */
-	finalize_and_jump_back(dst, patch);
+	finalize_and_jump_back(patch);
 
 	return;
 }
@@ -587,7 +609,7 @@ relocate_instrs(struct patch_desc *patch, uint8_t **dst)
  * finding padding bytes, etc..
  */
 void
-create_patch(struct intercept_desc *desc, uint8_t **dst)
+create_patch(struct intercept_desc *desc)
 {
 	for (uint32_t patch_i = 0; patch_i < desc->count; ++patch_i) {
 		struct patch_desc *patch = desc->items + patch_i;
@@ -599,6 +621,30 @@ create_patch(struct intercept_desc *desc, uint8_t **dst)
 		if (length >= TYPE_GW_SIZE) {
 			patch->syscall_num = TYPE_GW;
 			patch->return_register = REG_RA;
+
+			if (!desc->uses_trampoline) {
+				position_patch(patch);
+				extern void asm_entry_point(void);
+				uintptr_t jalr_addr = (uintptr_t)patch->return_address -
+							JUMP_2GB_INS_SIZE;
+				ptrdiff_t delta = (uintptr_t)asm_entry_point - jalr_addr;
+
+				if (delta < JUMP_2GB_NEG_REACH || delta > JUMP_2GB_POS_REACH) {
+					char buffer[0x1000];
+					int l = snprintf(buffer, sizeof(buffer),
+						"unintercepted syscall at: %s 0x%lx (out of range for GW without trampoline)\n",
+						desc->path, patch->syscall_offset);
+					intercept_log(buffer, (size_t)l);
+
+					free(patch->surrounding_instrs);
+					size_t num_to_move = desc->count - patch_i - 1;
+					if (num_to_move > 0)
+						memmove(patch, patch + 1, num_to_move * sizeof(*patch));
+					desc->count--;
+					patch_i--;
+					continue;
+				}
+			}
 
 		} else if (length >= TYPE_MID_SIZE) {
 			patch->syscall_num = TYPE_MID;
@@ -613,20 +659,30 @@ create_patch(struct intercept_desc *desc, uint8_t **dst)
 				patch->syscall_offset);
 
 			intercept_log(buffer, (size_t)l);
-			xabort("not enough space for patching around syscall");
+			free(patch->surrounding_instrs);
+			size_t num_to_move = desc->count - patch_i - 1;
+			if (num_to_move > 0)
+				memmove(patch, patch + 1, num_to_move * sizeof(*patch));
+			desc->count--;
+			patch_i--;
+			continue;
 		}
+if (patch->syscall_num != TYPE_GW || desc->uses_trampoline)
+			position_patch(patch);
+//		position_patch(patch);
 
-		position_patch(patch);
-
-		uint8_t *last_instr_addr =
-			patch->dst_jmp_patch + patch->patch_size_bytes;
+		uint8_t *last_instr_addr = patch->dst_jmp_patch + patch->patch_size_bytes;
 #ifdef __riscv_c
 		if (patch->end_with_c_nop)
 			last_instr_addr += C_NOP_INS_SIZE;
 #endif
 		mark_jump(desc, last_instr_addr);
 
-		relocate_instrs(patch, dst);
+		if (is_asm_relocation_space_full(MAX_RELOC_PATCH_SIZE(patch->patch_size_bytes)))
+			xabort(__func__, "insufficient relocation space, increase "
+				"RELOCATION_SIZE constant inside of intercept_irq_entry.S");
+
+		relocate_instrs(patch);
 
 		/*
 		 * All valuable info from the surrounding instrs is gathered,
@@ -695,8 +751,14 @@ copy_GW(struct intercept_desc *desc, const struct patch_desc *patch)
 	instrs_size += rvpc_sd(instrs_buff + instrs_size,
 				ret_reg, REG_SP, ORIG_RA_OFF);
 
-	instrs_size += rvp_jump_2GB(instrs_buff + instrs_size, ret_reg, ret_reg,
+	uint8_t size = rvp_jump_GW(instrs_buff + instrs_size, ret_reg, ret_reg,
 					jalr_addr, destination);
+	// if rvp_jump_GW() fails, it implies `INTERCEPT_NO_TRAMPOLINE=1`
+	if (size == 0)
+		xabort(__func__, "libsyscall_intercept.so and the target library are "
+			"more than 2 GB apart. A trampoline must be used; unset the "
+			"INTERCEPT_NO_TRAMPOLINE environment variable.");
+	instrs_size += size;
 
 	instrs_size += rvpc_ld(instrs_buff + instrs_size,
 				ret_reg, REG_SP, ORIG_RA_OFF);
@@ -815,7 +877,7 @@ activate_patches(struct intercept_desc *desc)
 
 		if (patch->dst_jmp_patch < desc->text_start ||
 		    patch->dst_jmp_patch > desc->text_end)
-			xabort("dst_jmp_patch outside text");
+			xabort(__func__, "dst_jmp_patch outside text");
 
 		switch (patch->syscall_num) {
 		case TYPE_GW:

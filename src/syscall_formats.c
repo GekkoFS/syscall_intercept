@@ -557,3 +557,27 @@ get_syscall_format(const struct syscall_desc *desc)
 
 	return formats + desc->nr;
 }
+
+static inline bool
+is_match(const char *name1, const char *name2)
+{
+	while (*name1 == *name2++)
+		if (*name1++ == '\0')
+			return true;
+
+	return false;
+}
+
+int32_t
+get_syscall_number(const char *name)
+{
+	if (name == NULL)
+		return -1;
+
+	for (size_t i = 0; i < ARRAY_SIZE(formats); ++i) {
+		if (formats[i].name != NULL && is_match(name, formats[i].name))
+			return i;
+	}
+
+	return -1;
+}

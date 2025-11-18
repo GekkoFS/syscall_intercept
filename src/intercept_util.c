@@ -58,7 +58,7 @@ mprotect_no_intercept(void *addr, size_t len, int prot,
 	ret = syscall_no_intercept(SYS_mprotect, addr, len, prot);
 	long result = ret.a0;
 
-	xabort_on_syserror(result, msg_on_error);
+	xabort_on_syserror(result, __func__, msg_on_error);
 }
 
 void *
@@ -72,7 +72,7 @@ xmmap_anon(size_t size)
 					MAP_PRIVATE | MAP_ANON, -1, (off_t)0);
 	long addr = ret.a0;
 
-	xabort_on_syserror(addr, __func__);
+	xabort_on_syserror(addr, __func__, NULL);
 
 	return (void *) addr;
 }
@@ -86,7 +86,7 @@ xmremap(void *addr, size_t old, size_t new)
 					old, new, MREMAP_MAYMOVE);
 	long new_addr = ret.a0;
 
-	xabort_on_syserror(new_addr, __func__);
+	xabort_on_syserror(new_addr, __func__, NULL);
 
 	return (void *) new_addr;
 }
@@ -99,7 +99,7 @@ xmunmap(void *addr, size_t len)
 	ret = syscall_no_intercept(SYS_munmap, addr, len);
 	long result = ret.a0;
 
-	xabort_on_syserror(result, __func__);
+	xabort_on_syserror(result, __func__, NULL);
 }
 
 long
@@ -110,7 +110,7 @@ xlseek(long fd, unsigned long off, int whence)
 	ret = syscall_no_intercept(SYS_lseek, fd, off, whence);
 	long result = ret.a0;
 
-	xabort_on_syserror(result, __func__);
+	xabort_on_syserror(result, __func__, NULL);
 
 	return result;
 }
@@ -124,7 +124,7 @@ xread(long fd, void *buffer, size_t size)
 	long result = ret.a0;
 
 	if (result != (long)size)
-		xabort_errno(syscall_error_code(result), __func__);
+		xabort_errno(syscall_error_code(result), __func__, NULL);
 }
 
 /* BEGIN CSTYLED */

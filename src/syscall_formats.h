@@ -89,4 +89,7 @@ struct syscall_format {
 const struct syscall_format *
 get_syscall_format(const struct syscall_desc *desc);
 
+int32_t
+get_syscall_number(const char *name);
+
 #endif

@@ -106,7 +106,7 @@ intercept_disasm_init(const unsigned char *begin, const unsigned char *end)
 	 * The handle here must be passed to capstone each time it is used.
 	 */
 	if (cs_open(CS_ARCH_RISCV, disasm_rv, &context->handle) != CS_ERR_OK)
-		xabort("cs_open");
+		xabort(__func__, "cs_open");
 
 	/*
 	 * Kindly ask capstone to return some details about the instruction.
@@ -114,7 +114,7 @@ intercept_disasm_init(const unsigned char *begin, const unsigned char *end)
 	 * to parse the resulting string.
 	 */
 	if (cs_option(context->handle, CS_OPT_DETAIL, CS_OPT_ON) != 0)
-		xabort("cs_option - CS_OPT_DETAIL");
+		xabort(__func__, "cs_option - CS_OPT_DETAIL");
 
 	/*
 	 * Overriding the printing routine used by capstone,
@@ -127,10 +127,10 @@ intercept_disasm_init(const unsigned char *begin, const unsigned char *end)
 		.realloc = realloc,
 		.vsnprintf = nop_vsnprintf};
 	if (cs_option(context->handle, CS_OPT_MEM, (size_t)&x) != 0)
-		xabort("cs_option - CS_OPT_MEM");
+		xabort(__func__, "cs_option - CS_OPT_MEM");
 
 	if ((context->insn = cs_malloc(context->handle)) == NULL)
-		xabort("cs_malloc");
+		xabort(__func__, "cs_malloc");
 
 	return context;
 }
@@ -164,6 +164,10 @@ get_a7(struct intercept_disasm_result *result, struct cs_insn *insn)
 #ifdef __riscv_c
 	case RISCV_INS_C_LI:
 		result->a7_set = insn->detail->riscv.operands[1].imm;
+		return;
+	/* c.mv a7, reg is encoded as c.add a7, reg */
+	case RISCV_INS_C_ADD:
+		result->is_a7_modified = true;
 		return;
 #endif
 	case RISCV_INS_ADDI:
@@ -217,8 +221,7 @@ check_reg_set(struct intercept_disasm_result *result, struct cs_insn *insn)
 		result->reg_set = op0.reg - 1;
 #ifdef __riscv_c
 	// ra implicitly overwritten
-	else if (insn->id == RISCV_INS_C_JAL || (insn->id == RISCV_INS_C_JALR &&
-			op0.reg != RISCV_REG_RA))
+	else if (insn->id == RISCV_INS_C_JALR && op0.reg != RISCV_REG_RA)
 		result->reg_set = RISCV_REG_RA - 1;
 #endif
 }
@@ -234,12 +237,14 @@ check_jump(struct intercept_disasm_result *result, struct cs_insn *insn,
 	uint8_t op_c = insn->detail->riscv.op_count;
 	cs_riscv_op *ops = insn->detail->riscv.operands;
 
-	if (insn->id == RISCV_INS_JALR || insn->id == RISCV_INS_C_JALR ||
-			insn->id == RISCV_INS_C_JR) {
+	if (insn->id == RISCV_INS_JALR) {
 		result->is_abs_jump = true;
+#ifdef __riscv_c
+	} else if (insn->id == RISCV_INS_C_JALR || insn->id == RISCV_INS_C_JR) {
+		result->is_abs_jump = true;
+#endif
 	} else if (ops[op_c - 1].type == RISCV_OP_IMM) {
 		result->has_ip_relative_opr = true;
-		result->rip_disp = ops[op_c - 1].imm;
 		result->rip_ref_addr = code + ops[op_c - 1].imm;
 	}
 }

@@ -98,7 +98,6 @@ void (*intercept_hook_point_clone_child)(
 			int *ptid, int *ctid,
 			long newtls)
 	__attribute__((visibility("default")));
-
 void (*intercept_hook_point_clone_parent)(
 			unsigned long flags, void *child_stack,
 			int *ptid, int *ctid,
@@ -109,7 +108,7 @@ void (*intercept_hook_point_post_kernel)(long syscall_number,
 			long arg0, long arg1,
 			long arg2, long arg3,
 			long arg4, long arg5,
-			long result)
+			long result)	
 	__attribute__((visibility("default")));
 
 bool debug_dumps_on;
@@ -139,6 +138,7 @@ debug_dump(const char *fmt, ...)
 	syscall_no_intercept(SYS_write, 2, buf, len);
 }
 
+static bool logging_enabled;
 static void log_header(void);
 
 
@@ -342,7 +342,7 @@ should_patch_object(uintptr_t addr, const char *path)
 		extern uint8_t asm_relocation_space[];
 		Dl_info self;
 		if (!dladdr(asm_relocation_space, &self))
-			xabort("self dladdr failure");
+			xabort(__func__, "self dladdr failure");
 		self_addr = (uintptr_t)self.dli_fbase;
 	}
 
@@ -441,25 +441,17 @@ const char *cmdline;
 
 extern uint8_t asm_relocation_space[];
 extern uint64_t asm_relocation_space_size;
-static uint8_t *cur_asm_relocation_space = asm_relocation_space;
-
-static bool
-is_asm_relocation_space_full(void)
-{
-	return (uint64_t)(cur_asm_relocation_space - asm_relocation_space) >
-		asm_relocation_space_size;
-}
 
 /*
  * Enable/disable writing on relocation space (intercept_irq_entry.S).
- * NOTE: this function expect asm_relocation_space to be align to
- *       PAGE_SIZE (12 bits) boundery.
  */
 static void
 write_enable_asm_relocation_space(bool enable_write)
 {
 	int prot;
 	const char *err_msg;
+	uint8_t *start = round_down_address(asm_relocation_space);
+	uint64_t size = asm_relocation_space_size + (uint64_t)(asm_relocation_space - start);
 
 	if (enable_write) {
 		prot = PROT_READ | PROT_WRITE | PROT_EXEC;
@@ -471,8 +463,7 @@ write_enable_asm_relocation_space(bool enable_write)
 					(char *)(asm_relocation_space + asm_relocation_space_size));
 	}
 
-	mprotect_no_intercept(asm_relocation_space, asm_relocation_space_size,
-				prot, err_msg);
+	mprotect_no_intercept(start, size, prot, err_msg);
 }
 
 /*
@@ -490,6 +481,7 @@ static __attribute__((constructor)) void
 intercept(int argc, char **argv)
 {
 	(void) argc;
+	char *path = NULL;
 	cmdline = argv[0];
 	extern void init_tls_offset_table(void);
 
@@ -499,13 +491,16 @@ intercept(int argc, char **argv)
 	vdso_addr = (void *)(uintptr_t)getauxval(AT_SYSINFO_EHDR);
 	debug_dumps_on = getenv("INTERCEPT_DEBUG_DUMP") != NULL;
 	patch_all_objs = (getenv("INTERCEPT_ALL_OBJS") != NULL);
-	intercept_setup_log(getenv("INTERCEPT_LOG"),
-			getenv("INTERCEPT_LOG_TRUNC"));
-	log_header();
+	path = getenv("INTERCEPT_LOG");
+	logging_enabled = (path != NULL && path[0] != '\0');
+	if (logging_enabled) {
+		intercept_setup_log(path, getenv("INTERCEPT_LOG_TRUNC"));
+		log_header();
+	}
 
 	dl_iterate_phdr(analyze_object, NULL);
 	if (!libc_found)
-		xabort("libc not found");
+		xabort(__func__, "libc not found");
 
 	init_tls_offset_table();
 	write_enable_asm_relocation_space(true);
@@ -513,11 +508,9 @@ intercept(int argc, char **argv)
 	for (uint32_t i = 0; i < objs_count; ++i) {
 		if (objs[i].count == 0)
 			continue;
-		else if (is_asm_relocation_space_full())
-			xabort("not enough space in relocation space");
 
 		allocate_trampoline(objs + i);
-		create_patch(objs + i, &cur_asm_relocation_space);
+		create_patch(objs + i);
 	}
 
 	write_enable_asm_relocation_space(false);
@@ -535,11 +528,9 @@ static void
 log_header(void)
 {
 	static const char self_decoder[] =
-		"tempfile=$(mktemp) ; tempfile2=$(mktemp) ; "
-		"grep \"^/\" $0 | cut -d \" \" -f 1,2 | "
-		"sed \"s/^/addr2line -p -f -e /\" > $tempfile ; "
-		"{ echo ; . $tempfile ; echo ; } > $tempfile2 ; "
-		"paste $tempfile2 $0 ; exit 0\n";
+		"awk 'BEGIN {print \"printf \\\"\\\\e[1;32m$USER\\\\e[33m$\\\\e[m\\n\\\"\"}"
+		" /^\\// {if ($1 != prev) {printf \"\\naddr2line -p -f -e %s\", $1; "
+		"prev = $1} printf \" %s\", $2}' $0 | bash | paste - $0; exit\n";
 
 	intercept_log(self_decoder, sizeof(self_decoder) - 1);
 }
@@ -552,35 +543,64 @@ log_header(void)
  * If error_code is not zero, it is also printed.
  */
 void
-xabort_errno(int error_code, const char *msg)
+xabort_errno(int error_code, const char *func, const char *msg)
 {
-	static const char main_msg[] = " libsyscall_intercept error\n";
+	const char main_msg[] = "\033[3;35mlibsyscall_intercept\033[m: \033[1;31mERROR\033[m";
+	syscall_no_intercept(SYS_write, 2, main_msg, sizeof(main_msg) - 1);
+
+	if (error_code != 0) {
+		char buf[0x20] = " \033[33m(exit code ";
+		size_t len = 0;
+		char *end = ")\033[m";
+		char *ec_str = buf + sizeof(buf) - 1;
+
+		// strlen()
+		while (buf[len])
+			++len;
+
+		/* not using libc - inline sprintf */
+		*ec_str-- = '\0';
+		do {
+			*ec_str-- = (error_code % 10) + '0';
+			error_code /= 10;
+		} while (error_code != 0);
+
+		// strcat(), skip first because of previous extra decrement in while loop
+		while (*++ec_str)
+			buf[len++] = *ec_str;
+
+		// strcat()
+		while (*end)
+			buf[len++] = *end++;
+
+		syscall_no_intercept(SYS_write, 2, buf, len);
+	}
+
+	if (func != NULL) {
+		char start[] = ": \033[32m";
+		syscall_no_intercept(SYS_write, 2, start, sizeof(start) - 1);
+
+		size_t len = 0;
+		while (func[len])
+			++len;
+		syscall_no_intercept(SYS_write, 2, func, len);
+
+		char end[] = "()\033[m";
+		syscall_no_intercept(SYS_write, 2, end, sizeof(end) - 1);
+	}
 
 	if (msg != NULL) {
-		/* not using libc - inline strlen */
+		char start[] = ": ";
+		syscall_no_intercept(SYS_write, 2, start, sizeof(start) - 1);
+
 		size_t len = 0;
-		while (msg[len] != '\0')
+		while (msg[len])
 			++len;
 		syscall_no_intercept(SYS_write, 2, msg, len);
 	}
 
-	if (error_code != 0) {
-		char buf[0x10];
-		size_t len = 1;
-		char *c = buf + sizeof(buf) - 1;
+	syscall_no_intercept(SYS_write, 2, "\n", 1);
 
-		/* not using libc - inline sprintf */
-		do {
-			*c-- = (error_code % 10) + '0';
-			++len;
-			error_code /= 10;
-		} while (error_code != 0);
-		*c = ' ';
-
-		syscall_no_intercept(SYS_write, 2, c, len);
-	}
-
-	syscall_no_intercept(SYS_write, 2, main_msg, sizeof(main_msg) - 1);
 	syscall_no_intercept(SYS_exit_group, 1);
 
 	__builtin_unreachable();
@@ -590,9 +610,9 @@ xabort_errno(int error_code, const char *msg)
  * xabort - print a message to stderr, and exit the process.
  */
 void
-xabort(const char *msg)
+xabort(const char *func, const char *msg)
 {
-	xabort_errno(0, msg);
+	xabort_errno(0, func, msg);
 }
 
 /*
@@ -600,85 +620,102 @@ xabort(const char *msg)
  * and calls xabort_errno if the said return value indicates an error.
  */
 void
-xabort_on_syserror(long syscall_result, const char *msg)
+xabort_on_syserror(long syscall_result, const char *func, const char *msg)
 {
 	if (syscall_error_code(syscall_result) != 0)
-		xabort_errno(syscall_error_code(syscall_result), msg);
+		xabort_errno(syscall_error_code(syscall_result), func, msg);
+}
+
+
+static inline __attribute__((section(".text.irqentry"))) int64_t
+binary_search(const struct patch_desc *items, uint32_t count, uint64_t ret_addr)
+{
+	if (count == 0) return -1;
+	int64_t low = 0;
+	int64_t high = count - 1;
+	int64_t mid;
+
+	while (low <= high) {
+		mid = low + (high - low) / 2;
+
+		if ((uint64_t)items[mid].return_address == ret_addr)
+			return mid;
+		else if ((uint64_t)items[mid].return_address < ret_addr)
+			low = mid + 1;
+		else
+			high = mid - 1;
+	}
+	return -1;
 }
 
 /*
- * When patch comes to asm_entry_point (intercept_irq_entry.S), one of
- * the first thing it does is finding "identity" of a patch by using
- * it's uniqe return address.
+ * When a patch comes to asm_entry_point (intercept_irq_entry.S), one of the
+ * first things done is to find its "identity" using its unique return address.
  */
-struct wrapper_ret
-detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr,
-			uint64_t GW_ret_addr)
+__attribute__((section(".text.irqentry"))) struct wrapper_ret
+detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_addr)
 {
-	struct patch_desc *patch = NULL;
-	// sign-extend syscall_num to register size
-	int64_t syscall_num = INT64_MIN;
-	uint64_t reloc_addr = 0;
-	uint64_t ret_addrs[3] = {MID_ret_addr, SML_ret_addr, GW_ret_addr};
-	uint8_t ra_idx = 0;
+	const uint64_t check_ret_addrs[3] = {MID_ret_addr, SML_ret_addr, GW_ret_addr};
 
-	for (; ra_idx < sizeof(ret_addrs); ++ra_idx) {
+	for (uint8_t ra_idx = 0; ra_idx < sizeof(check_ret_addrs); ++ra_idx) {
+		uint64_t ra = check_ret_addrs[ra_idx];
 		for (uint32_t o = 0; o < objs_count; ++o) {
-			for (uint32_t p = 0; p < objs[o].count; ++p) {
+			// check if current obj contains the return address
+			if (ra < (uint64_t)objs[o].text_start || ra > (uint64_t)objs[o].text_end)
+				continue;
 
-				patch = objs[o].items + p;
-				uint64_t ret_addr = (uint64_t)patch->return_address;
-				syscall_num = patch->syscall_num;
-				reloc_addr = (uint64_t)patch->relocation_address;
+			int64_t match_idx = binary_search(objs[o].items, objs[o].count, ra);
+			if (match_idx >= 0) {
+				const struct patch_desc *patch = objs[o].items + match_idx;
+				int64_t sn = (int64_t)patch->syscall_num;
+				int64_t reloc_addr = (int64_t)patch->relocation_address;
 
-				if (ret_addr == ret_addrs[ra_idx]) {
-					switch (syscall_num) {
-					case TYPE_GW:
-						if (ra_idx == 2)
-							goto ret_to_irq_entry;
-						break;
-					case TYPE_MID:
-						if (ra_idx == 0)
-							goto ret_to_irq_entry;
-						break;
-					default: // TYPE_SML
-						if (ra_idx == 1)
-							goto ret_to_irq_entry;
-						break;
-					}
+				switch (sn) {
+				case TYPE_GW:
+					if (ra_idx == 2)
+						return (struct wrapper_ret){sn, reloc_addr};
+					break;
+				case TYPE_MID:
+					if (ra_idx == 0)
+						return (struct wrapper_ret){sn, reloc_addr};
+					break;
+				default: // TYPE_SML
+					if (ra_idx == 1)
+						return (struct wrapper_ret){sn, reloc_addr};
+					break;
 				}
+			 break;
 			}
 		}
 	}
-ret_to_irq_entry:
 
-	if (ra_idx >= sizeof(ret_addrs))
-		xabort("Failed to identify patch");
-
-	return (struct wrapper_ret){.a0 = syscall_num, .a1 = reloc_addr};
+	xabort(__func__, "failed to identify patch");
 }
 
-static struct patch_desc *
-get_cur_patch(int64_t return_address)
+static inline __attribute__((section(".text.irqentry"))) struct patch_desc *
+get_cur_patch(uint64_t return_address)
 {
-	struct patch_desc *patch = NULL;
-
 	for (uint32_t o = 0; o < objs_count; ++o) {
-		for (uint32_t p = 0; p < objs[o].count; ++p) {
-			patch = objs[o].items + p;
-			if ((int64_t)patch->return_address == return_address)
-				break;
-		}
+		if (return_address < (uint64_t)objs[o].text_start ||
+				return_address > (uint64_t)objs[o].text_end)
+			continue;
+
+		int64_t match_idx = binary_search(objs[o].items, objs[o].count, return_address);
+		if (match_idx >= 0)
+			return objs[o].items + match_idx;
 	}
 
-	return patch;
+	xabort(__func__, "failed to identify patch");
 }
 
-void
+__attribute__((section(".text.irqentry"))) void
 intercept_post_clone_log_syscall(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
-			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
+					int64_t a4, int64_t a5, int64_t a6, int64_t a7)
 {
-	struct patch_desc *patch = get_cur_patch(a6);
+	if (!logging_enabled)
+		return;
+
+	const struct patch_desc *patch = get_cur_patch(a6);
 
 	struct syscall_desc desc = {
 		.nr = (int)a7, /* ignore higher 32 bits */
@@ -699,10 +736,11 @@ intercept_post_clone_log_syscall(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
  * The routine called by an assembly wrapper when a clone syscall returns zero,
  * and a new stack pointer is used in the child thread.
  */
-void
+__attribute__((section(".text.irqentry"))) void
 intercept_routine_post_clone(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
 {
+
 	(void) a6;
 	struct syscall_desc desc = {
 		.nr = (int)a7, /* ignore higher 32 bits */
@@ -713,7 +751,6 @@ intercept_routine_post_clone(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		.args[4] = a4,
 		.args[5] = a5
 	};
-
 	if (a0 == 0) {
 		if (intercept_hook_point_clone_child != NULL)
 			intercept_hook_point_clone_child(
@@ -766,13 +803,13 @@ intercept_routine_post_clone(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
  * rsp_in_asm_wrapper -- the stack pointer to restore after returning
  *  from this function.
  */
-struct wrapper_ret
+__attribute__((section(".text.irqentry"))) struct wrapper_ret
 intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
 {
 	struct wrapper_ret result = {.a0 = a0, .a1 = a1};
 	int forward_to_kernel = true;
-	struct patch_desc *patch = get_cur_patch(a6);
+	const struct patch_desc *patch = get_cur_patch(a6);
 	/*
 	 * The RISC-V version of this library doesn't rely on offsets, instead
 	 * ecall args get passed directly. It's more straightforward, and
@@ -788,10 +825,13 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		.args[5] = a5
 	};
 
+#ifndef SYSCALL_INTERCEPT_WITHOUT_MAGIC_SYSCALLS
 	if (handle_magic_syscalls(&desc, &result.a0) == 0)
 		return result;
+#endif
 
-	intercept_log_syscall(patch, &desc, UNKNOWN, 0);
+	if (logging_enabled)
+		intercept_log_syscall(patch, &desc, UNKNOWN, 0);
 
 	if (intercept_hook_point != NULL)
 		forward_to_kernel = intercept_hook_point(desc.nr,
@@ -821,27 +861,20 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		 * the clone_child_intercept_routine instead, executing
 		 * it on the new child threads stack, then returns to libc.
 		 */
-		if (desc.nr == SYS_clone && (desc.args[1] != 0 ||
-				desc.args[0] & CLONE_VFORK)) {
-			return (struct wrapper_ret){.a0 = UNH_SYSCALL,
-							.a1 = UNH_CLONE};
-		}
+		if (desc.nr == SYS_clone && (desc.args[1] != 0 || desc.args[0] & CLONE_VFORK))
+			return (struct wrapper_ret){.a0 = UNH_SYSCALL, .a1 = UNH_CLONE};
 #ifdef SYS_clone3
-		else if (desc.nr == SYS_clone3 &&
-				((struct clone_args *)desc.args[0])->stack != 0) {
-			return (struct wrapper_ret){.a0 = UNH_SYSCALL,
-							.a1 = UNH_CLONE};
-		}
+		else if (desc.nr == SYS_clone3 && ((struct clone_args *)desc.args[0])->stack != 0)
+			return (struct wrapper_ret){.a0 = UNH_SYSCALL, .a1 = UNH_CLONE};
 #endif
-		else {
-			result = syscall_no_intercept(desc.nr,
-					desc.args[0],
-					desc.args[1],
-					desc.args[2],
-					desc.args[3],
-					desc.args[4],
-					desc.args[5]);
-		}
+
+		result = syscall_no_intercept(desc.nr,
+				desc.args[0],
+				desc.args[1],
+				desc.args[2],
+				desc.args[3],
+				desc.args[4],
+				desc.args[5]);
 
 		/*
 		 * For consistency among all clone variants, from the user's
@@ -856,7 +889,6 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		else if (desc.nr == SYS_clone3)
 			intercept_routine_post_clone(a0, a1, a2, a3, a4, a5, a6, a7);
 #endif
-
 
 		/*
 			* some users might want to execute code after a syscall has
@@ -874,7 +906,8 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 					result.a0);
 	}
 
-	intercept_log_syscall(patch, &desc, KNOWN, result.a0);
+	if (logging_enabled)
+		intercept_log_syscall(patch, &desc, KNOWN, result.a0);
 
 	return result;
 }

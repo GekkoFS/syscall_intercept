@@ -41,10 +41,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <errno.h>
 
 #include "intercept.h"
 #include "intercept_util.h"
 #include "disasm_wrapper.h"
+#include "syscall_formats.h"
+
+
+// Used with environment variables INTERCEPT_SYS_INCLUDE and INTERCEPT_SYS_EXCLUDE
+static const char *filter_incl = NULL;
+static const char *filter_excl = NULL;
+static int32_t *sys_filter_ptr = NULL;
+
 
 /*
  * For simplicity, declare syscall_no_intercept() with return value 'long'
@@ -72,7 +81,7 @@ open_orig_file(const struct intercept_desc *desc)
 
 	fd = syscall_no_intercept(SYS_openat, AT_FDCWD, desc->path, O_RDONLY);
 
-	xabort_on_syserror(fd, __func__);
+	xabort_on_syserror(fd, __func__, NULL);
 
 	return fd;
 }
@@ -86,7 +95,7 @@ add_table_info(struct section_list *list, const Elf64_Shdr *header)
 		list->headers[list->count] = *header;
 		list->count++;
 	} else {
-		xabort("allocated section_list exhausted");
+		xabort(__func__, "allocated section_list exhausted");
 	}
 }
 
@@ -152,7 +161,7 @@ find_sections(struct intercept_desc *desc, int fd)
 	}
 
 	if (!text_section_found)
-		xabort("text section not found");
+		xabort(__func__, "text section not found");
 }
 
 /*
@@ -329,6 +338,121 @@ find_jumps_in_section_rela(struct intercept_desc *desc, Elf64_Shdr *section,
 	}
 }
 
+static void
+init_syscall_filter(void)
+{
+	const char *filter = NULL;
+	filter_incl = getenv("INTERCEPT_SYS_INCLUDE");
+	filter_excl = getenv("INTERCEPT_SYS_EXCLUDE");
+
+	if (filter_incl && filter_excl)
+		xabort(__func__, "INTERCEPT_SYS_INCLUDE and INTERCEPT_SYS_EXCLUDE "
+			"are mutually exclusive");
+	else if (filter_incl)
+		filter = filter_incl;
+	else if (filter_excl)
+		filter = filter_excl;
+	else
+		return;
+
+	if (filter[0] == '\0')
+		return;
+
+	// get the size of an input and the number of syscalls
+	size_t filter_len = 0;
+	size_t sys_num = 1;
+	for (; filter[filter_len]; ++filter_len)
+		if (filter[filter_len] == ',' && filter[filter_len+1] != ',')
+			++sys_num;
+
+	sys_filter_ptr = malloc(sizeof(int32_t) * (sys_num + 1));
+	int sys_i = 0;
+	char sys_str[0x100] = {0};
+	int sys_str_i = 0;
+	char *endptr;
+	errno = 0;
+
+	for (size_t i = 0; i <= filter_len; ++i) {
+		if (filter[i] == ',' || filter[i] == '\0') {
+			// repeated ',' or an input starts with it
+			if (sys_str_i == 0)
+				continue;
+
+			sys_str[sys_str_i] = '\0';
+			int32_t syscall_num = (int32_t)strtol(sys_str, &endptr, 10);
+
+			if (errno == ERANGE)
+				xabort_errno(ERANGE, __func__, strerror_no_intercept(ERANGE));
+			else if (*endptr == '\0')
+				sys_filter_ptr[sys_i] = syscall_num;
+			else if (!strncmp(sys_str, "SYS_", 4))
+				sys_filter_ptr[sys_i] = get_syscall_number(sys_str + 4);
+			else
+				sys_filter_ptr[sys_i] = get_syscall_number(sys_str);
+
+			if (sys_filter_ptr[sys_i] < 0)
+				xabort_errno(ENOENT, __func__, "Unknown syscall, "
+						"provide a syscall number instead of the name");
+
+			sys_str_i = 0;
+			++sys_i;
+		} else {
+			sys_str[sys_str_i++] = filter[i];
+		}
+	}
+
+	// mark end of input
+	sys_filter_ptr[sys_i] = -1;
+}
+
+/*
+ * is_not_filtered() uses has_jump() mostly to determine function boundaries.
+ * In contrast to patcher.c, which also uses has_jump() to drop the previous a7 value,
+ * the jump_table here is still incomplete.
+ * The accuracy of this static analysis could be jeopardized if the same ecall is used for
+ * different syscalls. For example, a7 gets set to SYS_read, the ecall executes, and afterward
+ * a7 gets set to SYS_write and jumps back to the same ecall instruction.
+ * This case (where the same ecall is reused by different system calls) is not found in glibc,
+ * and that's why filtering is done in this phase, where adding patch structs is being decided.
+ */
+static inline bool
+is_not_filtered(const struct intercept_desc *desc, const struct intercept_disasm_result *surr)
+{
+	if (!filter_incl && !filter_excl)
+		return true;
+
+	int32_t syscall_num = -1;
+
+	for (size_t i = 0; i < SYSCALL_IDX; ++i) {
+		if (has_jump(desc, surr[i].address))
+			syscall_num = -1;
+
+		if (surr[i].a7_set > -1)
+			syscall_num = surr[i].a7_set;
+		else if (surr[i].is_a7_modified)
+			syscall_num = -1;
+	}
+
+	if (syscall_num == -1)
+		return true;
+
+	for (size_t i = 0; sys_filter_ptr[i] != -1; ++i) {
+		if (sys_filter_ptr[i] == syscall_num)
+			return (bool)filter_incl;
+	}
+
+	return (bool)filter_excl;
+}
+
+static void
+free_syscall_filter(void)
+{
+	if (sys_filter_ptr) {
+		free(sys_filter_ptr);
+		sys_filter_ptr = NULL;
+	}
+}
+
 /*
  * has_pow2_count
  * Checks if the positive number of patches in a struct intercept_desc
@@ -425,23 +549,17 @@ fill_up_patch(struct intercept_desc *desc, struct patch_desc *patch,
 static void
 crawl_text(struct intercept_desc *desc)
 {
-	unsigned char *code = desc->text_start;
+	uint8_t *code = desc->text_start;
 
 	uint8_t instrs_num = SURROUNDING_INSTRS_NUM;
 
 	/*
-	 * Remember the previous three instructions, while
-	 * disassembling the code instruction by instruction in the
-	 * while loop below.
+	 * Store results of n surrounding instructions (SURROUNDING_INSTRS_NUM).
+	 * The RISC-V version of this library can patch any ecall, even if it
+	 * appears at the beginning or at the end of the .text section.
 	 */
 	struct intercept_disasm_result surr[SURROUNDING_INSTRS_NUM] = {{0}};
 
-	/*
-	 * How many previous instructions were decoded before this one,
-	 * and stored in the surr array. Usually three, except for the
-	 * beginning of the text section -- the first instruction naturally
-	 * has no previous instruction.
-	 */
 	struct intercept_disasm_context *context =
 	    intercept_disasm_init(desc->text_start, desc->text_end);
 
@@ -458,7 +576,7 @@ crawl_text(struct intercept_desc *desc)
 		if (result.has_ip_relative_opr)
 			mark_jump(desc, result.rip_ref_addr);
 
-		if (surr[SYSCALL_IDX].is_syscall) {
+		if (surr[SYSCALL_IDX].is_syscall && is_not_filtered(desc, surr)) {
 			struct patch_desc *patch = add_new_patch(desc);
 			fill_up_patch(desc, patch, surr, SYSCALL_IDX);
 		}
@@ -491,8 +609,10 @@ crawl_text(struct intercept_desc *desc)
 				sizeof(struct intercept_disasm_result));
 		}
 
-		struct patch_desc *patch = add_new_patch(desc);
-		fill_up_patch(desc, patch, surr, i);
+		if (is_not_filtered(desc, surr)) {
+			struct patch_desc *patch = add_new_patch(desc);
+			fill_up_patch(desc, patch, surr, i);
+		}
 	}
 
 	intercept_disasm_destroy(context);
@@ -532,6 +652,51 @@ get_min_address(void)
 	return min_address;
 }
 
+static uint8_t *
+get_guess(const uint8_t *text_start, uint8_t *guess)
+{
+	FILE *maps;
+	char line[0x2000];
+
+	if ((maps = fopen("/proc/self/maps", "r")) == NULL)
+		xabort(__func__, "fopen /proc/self/maps");
+
+	while ((fgets(line, sizeof(line), maps)) != NULL) {
+		uint8_t *start;
+		uint8_t *end;
+
+		if (sscanf(line, "%p-%p", (void **)&start, (void **)&end) != 2)
+			xabort(__func__, "sscanf from /proc/self/maps");
+
+		/*
+		 * Let's see if an existing mapping overlaps
+		 * with the guess!
+		 */
+		if (end < guess)
+			continue; /* No overlap, let's see the next mapping */
+
+		if (start >= guess + PAGE_SIZE) {
+			/* The rest of the mappings can't possibly overlap */
+			break;
+		}
+
+		/*
+		 * The next guess is the page following the mapping seen
+		 * just now.
+		 */
+		guess = end;
+
+		if (guess >= text_start + JUMP_2GB_POS_REACH) {
+			/* Too far away */
+			xabort(__func__, "unable to find place for trampoline");
+		}
+	}
+
+	fclose(maps);
+
+	return guess;
+}
+
 /*
  * allocate_trampoline_table
  * Allocates memory close to a text section (close enough
@@ -551,11 +716,9 @@ allocate_trampoline(struct intercept_desc *desc)
 		return;
 	}
 
-	FILE *maps;
-	char line[0x2000];
-	unsigned char *guess; /* Where we would like to allocate the table */
+	uint8_t *guess; /* Where we would like to allocate the table */
 
-	if ((uintptr_t)desc->text_end < INT32_MAX) {
+	if ((uintptr_t)desc->text_end < (uintptr_t)-JUMP_2GB_NEG_REACH) {
 		/* start from the bottom of memory */
 		guess = (void *)0;
 	} else {
@@ -565,57 +728,32 @@ allocate_trampoline(struct intercept_desc *desc)
 		 * Round up to a memory page boundary, as this address must be
 		 * mappable.
 		 */
-		guess = desc->text_end - INT32_MAX;
-		guess = (unsigned char *)(((uintptr_t)guess)
+		guess = desc->text_end + JUMP_2GB_NEG_REACH;	// JUMP_2GB_NEG_REACH is a negative value
+		guess = (uint8_t *)(((uintptr_t)guess)
 				& ~((uintptr_t)(0xfff))) + 0x1000;
 	}
 
 	if ((uintptr_t)guess < get_min_address())
 		guess = (void *)get_min_address();
 
-	if ((maps = fopen("/proc/self/maps", "r")) == NULL)
-		xabort("fopen /proc/self/maps");
+	// Give mmap() 4 attempts because of MAP_FIXED_NOREPLACE
+	for (uint8_t i = 0; i < 4; ++i) {
+		guess = get_guess(desc->text_start, guess);
+		desc->trampoline_address = mmap(guess, TRAMPOLINE_SIZE,
+						PROT_READ | PROT_WRITE | PROT_EXEC,
+						MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANON,
+						-1, 0);
 
-	while ((fgets(line, sizeof(line), maps)) != NULL) {
-		unsigned char *start;
-		unsigned char *end;
-
-		if (sscanf(line, "%p-%p", (void **)&start, (void **)&end) != 2)
-			xabort("sscanf from /proc/self/maps");
-
-		/*
-		 * Let's see if an existing mapping overlaps
-		 * with the guess!
-		 */
-		if (end < guess)
-			continue; /* No overlap, let's see the next mapping */
-
-		if (start >= guess + TRAMPOLINE_SIZE) {
-			/* The rest of the mappings can't possibly overlap */
+		// retry when range collide with an existing mapping
+		if (desc->trampoline_address == MAP_FAILED && errno != EEXIST) {
+			xabort_errno(errno, __func__, strerror_no_intercept(errno));
+		// verify the returned address for backward-compatible (Linux < v4.17)
+		} else if (desc->trampoline_address != guess) {
+			munmap(desc->trampoline_address, TRAMPOLINE_SIZE);
+		} else {
 			break;
 		}
-
-		/*
-		 * The next guess is the page following the mapping seen
-		 * just now.
-		 */
-		guess = end;
-
-		if (guess >= desc->text_start + JUMP_2GB_POS_REACH) {
-			/* Too far away */
-			xabort("unable to find place for trampoline");
-		}
 	}
-
-	fclose(maps);
-
-	desc->trampoline_address = mmap(guess, TRAMPOLINE_SIZE,
-					PROT_READ | PROT_WRITE | PROT_EXEC,
-					MAP_FIXED | MAP_PRIVATE | MAP_ANON,
-					-1, 0);
-
-	if (desc->trampoline_address == MAP_FAILED)
-		xabort("unable to allocate space for trampoline");
 
 	__builtin___clear_cache((char *)guess, (char *)(guess + TRAMPOLINE_SIZE));
 }
@@ -659,5 +797,9 @@ find_syscalls(struct intercept_desc *desc)
 
 	syscall_no_intercept(SYS_close, fd);
 
+	init_syscall_filter();
+
 	crawl_text(desc);
+
+	free_syscall_filter();
 }

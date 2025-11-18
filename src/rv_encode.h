@@ -75,19 +75,24 @@
 				SLLI_INS_SIZE + \
 				JALR_INS_SIZE)
 
+// JAL_*_REACH is split into +/- offsets
+#define JAL_POS_REACH		0xffffe
+#define JAL_NEG_REACH		-0x100000
+// C_J_*_REACH is split into +/- offsets
+#define C_J_POS_REACH		0x7fe
+#define C_J_NEG_REACH		-0x800
 /*
- * NOTE: JAL_AVG_REACH reach lays in between +/- offset, the positive offset is
- *       0xffffe and the negative is 0x100000.
- *       The bias is 2 because of the implicit bit.
+ * NOTE: JUMP_2GB_*_REACH is split into +/- offsets. The positive reach is ~4KB shorter
+ * 	 than the negative reach because of 2's complement bias and auipc 12-bit shifting.
+ * 	 Max positive reach (2147481598 B):
+ * 	 	auipc increases PC by 0x7ffff000 (INT32_MAX - 0xfff)
+ * 	 	jalr offset gives an extra 0x7fe (max even value)
+ * 	 Max negative reach (−2147485696 B):
+ * 	 	auipc reduces PC by 0x80000000 (INT32_MIN)
+ * 	 	jalr offset reduces PC by an extra 0x800
  */
-#define JAL_AVG_REACH		0xfffff
-/*
- * NOTE: JUMP_2GB_MAX_REACH reach applies to the negative offset
- * 	 while the positive offset is: JUMP_2GB_MAX_REACH - 4KB
- * 	 because of 2's complement bias and auipc shifting (1 << 12)
- */
-#define JUMP_2GB_NEG_REACH	INT32_MIN
-#define JUMP_2GB_POS_REACH	(INT32_MAX - 0xfff)
+#define JUMP_2GB_POS_REACH	(INT32_MAX - 0x801)
+#define JUMP_2GB_NEG_REACH	((long)INT32_MIN - 0x800)
 
 /* Pseudo instructions max sizes */
 #define MAX_PC_INS_SIZE		RV_INS_SIZE
@@ -150,6 +155,7 @@ uint8_t rvc_addi16sp(uint8_t *instr_buff, int32_t imm);
 uint8_t rvc_addi(uint8_t *instr_buff, uint8_t rd, int32_t imm);
 uint8_t rvc_addiw(uint8_t *instr_buff, uint8_t rd, int32_t imm);
 uint8_t rvc_slli(uint8_t *instr_buff, uint8_t rd, int32_t imm);
+uint8_t rvc_j(uint8_t *instr_buff, int32_t imm);
 uint8_t rvc_jalr(uint8_t *instr_buff, uint8_t rs);
 uint8_t rvc_jr(uint8_t *instr_buff, uint8_t rs);
 uint8_t rvc_nop(uint8_t *instr_buff);
@@ -179,6 +185,8 @@ uint8_t rvp_sd_to_sym(uint8_t *instrs_buff, uint8_t tmp_reg, uint8_t rs,
 			uintptr_t from, uintptr_t sym_addr);
 uint8_t rvp_ld_from_sym(uint8_t *instrs_buff, uint8_t rd,
 			uintptr_t from, uintptr_t sym_addr);
+uint8_t rvp_jump_GW(uint8_t *instrs_buff, uint8_t rd, uint8_t rs,
+			uintptr_t from, uintptr_t to);
 uint8_t rvp_jump_2GB(uint8_t *instrs_buff, uint8_t rd, uint8_t rs,
 			uintptr_t from, uintptr_t to);
 uint8_t rvp_jump_abs(uint8_t *instrs_buff, uint8_t rd,

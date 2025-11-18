@@ -840,7 +840,7 @@ intercept_setup_log(const char *path, const char *trunc)
 	log_fd = (int)syscall_no_intercept(SYS_openat, AT_FDCWD,
 						full_path, flags, 0700);
 
-	xabort_on_syserror(log_fd, "opening log");
+	xabort_on_syserror(log_fd, __func__, "opening log");
 }
 
 static char *

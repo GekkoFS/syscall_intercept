@@ -33,7 +33,7 @@
 	.global	syscall_no_intercept
 	.type	syscall_no_intercept, @function
 
-	.text
+	.section .text.irqentry
 
 syscall_no_intercept:
 	mv	a7, a0  /* convert from linux ABI calling */

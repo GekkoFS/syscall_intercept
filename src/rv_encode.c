@@ -55,7 +55,7 @@ reverse_byte_order(uint8_t *instr_buff, uint32_t instr, size_t size)
 }
 
 static offsets_2GB
-get_auipc_offsets(uintptr_t from, uintptr_t to)
+get_2GB_offsets(uintptr_t from, uintptr_t to)
 {
 	ptrdiff_t delta = to - from;
 
@@ -251,6 +251,25 @@ rvc_slli(uint8_t *instr_buff, uint8_t rd, int32_t imm)
 }
 
 uint8_t
+rvc_j(uint8_t *instr_buff, int32_t imm)
+{
+	if (imm < C_J_NEG_REACH || imm > C_J_POS_REACH)
+		return 0;
+
+	uint16_t instr = 0;
+	imm >>= 1;
+
+	instr = 0x5 << 13 | (imm >> 10 & 0x1) << 12 | (imm >> 3 & 0x1) << 11;
+	instr |= (imm >> 7 & 0x3) << 9 | (imm >> 9 & 0x1) << 8;
+	instr |= (imm >> 5 & 0x1) << 7 | (imm >> 6 & 0x1) << 6;
+	instr |= (imm & 0x7) << 3 | (imm >> 4 & 0x1) << 2 | 0x1;
+
+	reverse_byte_order(instr_buff, instr, RVC_INS_SIZE);
+
+	return RVC_INS_SIZE;
+}
+
+uint8_t
 rvc_jalr(uint8_t *instr_buff, uint8_t rs)
 {
 	if (rs == REG_ZERO)
@@ -398,7 +417,7 @@ rv_auipc(uint8_t *instr_buff, uint8_t rd, int32_t imm)
 uint8_t
 rv_jal(uint8_t *instr_buff, uint8_t rd, int32_t imm)
 {
-	if (imm < -JAL_AVG_REACH - 1 || imm >= JAL_AVG_REACH)
+	if (imm < JAL_NEG_REACH || imm > JAL_POS_REACH)
 		return 0;
 
 	uint32_t instr = 0;
@@ -576,7 +595,7 @@ rvp_sd_to_sym(uint8_t *instrs_buff, uint8_t tmp_reg, uint8_t rs,
 	uint8_t total_size = 0;
 	offsets_2GB offs;
 
-	offs = get_auipc_offsets(from, sym_addr);
+	offs = get_2GB_offsets(from, sym_addr);
 	if (offs.offset_hi == 0 && offs.offset_lo == 0)
 		return 0;
 
@@ -595,7 +614,7 @@ rvp_ld_from_sym(uint8_t *instrs_buff, uint8_t rd,
 	uint8_t total_size = 0;
 	offsets_2GB offs;
 
-	offs = get_auipc_offsets(from, sym_addr);
+	offs = get_2GB_offsets(from, sym_addr);
 	if (offs.offset_hi == 0 && offs.offset_lo == 0)
 		return 0;
 
@@ -608,13 +627,31 @@ rvp_ld_from_sym(uint8_t *instrs_buff, uint8_t rd,
 }
 
 uint8_t
+rvp_jump_GW(uint8_t *instrs_buff, uint8_t rd, uint8_t rs,
+		uintptr_t from, uintptr_t to)
+{
+	uint8_t total_size = 0;
+	offsets_2GB offs;
+
+	offs = get_2GB_offsets(from, to);
+	if (offs.offset_hi == 0 && offs.offset_lo == 0)
+		return 0;
+
+	total_size += rv_auipc(instrs_buff + total_size, rs, offs.offset_hi);
+	total_size += rv_jalr(instrs_buff + total_size,
+				rd, rs, offs.offset_lo);
+
+	return total_size;
+}
+
+uint8_t
 rvp_jump_2GB(uint8_t *instrs_buff, uint8_t rd, uint8_t rs,
 		uintptr_t from, uintptr_t to)
 {
 	uint8_t total_size = 0;
 	offsets_2GB offs;
 
-	offs = get_auipc_offsets(from, to);
+	offs = get_2GB_offsets(from, to);
 	if (offs.offset_hi == 0 && offs.offset_lo == 0)
 		return 0;
 

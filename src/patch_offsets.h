@@ -12,7 +12,7 @@
  */
 #define ORIG_RA_OFF	0
 /*
- * Reserved spot for the TYPE_GW original ra value offset. Used in patcher.c, but
+ * Reserved spot for the TYPE_MID original ra value offset. Used in patcher.c, but
  * not in intercept_irq_entry.S. Mostly a placeholder.
  */
 #define MID_ORIG_RA_OFF	8

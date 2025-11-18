@@ -76,8 +76,6 @@ extern void (*intercept_hook_point_post_kernel)(long syscall_number,
 			long arg2, long arg3,
 			long arg4, long arg5,
 			long result);
-
-
 /*
  * syscall_no_intercept - syscall without interception
  *

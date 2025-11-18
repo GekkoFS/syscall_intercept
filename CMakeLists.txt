@@ -29,7 +29,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.18)
 project(syscall_intercept C ASM)
 
 set(CMAKE_DISABLE_IN_SOURCE_BUILD ON)
@@ -48,6 +48,8 @@ option(TREAT_WARNINGS_AS_ERRORS
 	"make the build fail on any warnings during compilation, or linking" ON)
 option(EXPECT_SPURIOUS_SYSCALLS
 	"account for some unexpected syscalls in tests - enable while using sanitizers, gcov" OFF)
+option(STATIC_CAPSTONE "statically link libcapstone into the shared library" OFF)
+
 find_program(CTAGS ctags)
 if(CTAGS)
 	option(AUTO_RUN_CTAGS "create tags file every on every rebuild" ON)
@@ -120,7 +122,9 @@ function(set_isa_extensions)
 	if(NOT comp_result EQUAL 0)
 		string(FIND "${isa_extensions}" "_" underscore_idx)
 		string(SUBSTRING "${isa_extensions}" 0 ${underscore_idx} prefix)
-		# string(SUBSTRING "${isa_extensions}" ${underscore_idx} -1 suffix)
+		if(underscore_idx GREATER_EQUAL 0)
+			string(SUBSTRING "${isa_extensions}" ${underscore_idx} -1 suffix)
+		endif()
 		string(REGEX REPLACE "[su]" "" prefix "${prefix}")
 		set(isa_extensions "${prefix}${suffix}")
 
@@ -131,6 +135,17 @@ function(set_isa_extensions)
 			RESULT_VARIABLE comp_result
 		)
 	endif()
+
+	# If compilation test succeeded, add those extensions to compiling process
+	#if(comp_result EQUAL 0)
+	#	message(STATUS "Detected ISA extensions: ${isa_extensions}")
+	#	target_compile_options(syscall_intercept_base_c
+	#					PUBLIC "-march=${isa_extensions}")
+	#		target_compile_options(syscall_intercept_base_asm
+	#					PUBLIC "-march=${isa_extensions}")
+	#		target_compile_options(syscall_intercept_base_clf
+	#					PUBLIC "-march=${isa_extensions}")
+	#endif()
 endfunction()
 
 set_isa_extensions()
@@ -138,6 +153,15 @@ set_isa_extensions()
 if(HAS_NOUNUSEDARG)
 	target_compile_options(syscall_intercept_base_asm BEFORE
 		PRIVATE "-Wno-unused-command-line-argument")
+endif()
+
+# By default, magic_syscalls are not handled
+if(NOT WITH_MAGIC_SYSCALLS)
+	target_compile_definitions(syscall_intercept_base_c PUBLIC
+					SYSCALL_INTERCEPT_WITHOUT_MAGIC_SYSCALLS=1)
+	# magic_syscalls.c will be empty TU, disable compiler warning for it
+	set_source_files_properties(src/magic_syscalls.c PROPERTIES
+					COMPILE_OPTIONS "-Wno-pedantic")
 endif()
 
 set_property(TARGET syscall_intercept_base_c
@@ -185,16 +209,13 @@ endif()
 set(LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/linker_script.ld")
 target_link_libraries(syscall_intercept_shared PRIVATE "-T${LINKER_SCRIPT}")
 
-#target_link_libraries(syscall_intercept_shared
-#		PRIVATE ${CMAKE_DL_LIBS} ${capstone_LIBRARIES})
 target_link_libraries(syscall_intercept_shared
 	PRIVATE ${CMAKE_DL_LIBS}
 	"-Wl,--push-state,${CAPSTONE_LINK_MODE} -lcapstone -Wl,--pop-state"
 	"-Wl,--version-script=${CMAKE_SOURCE_DIR}/version.map")
 
-string(REPLACE ";" " " sanitized_capstone_CFLAGS "${capstone_CFLAGS}")
 target_link_libraries(syscall_intercept_static
-	INTERFACE ${CMAKE_DL_LIBS} ${sanitized_capstone_LIBRARIES})
+	INTERFACE ${CMAKE_DL_LIBS} ${capstone_LIBRARIES})
 
 set_target_properties(syscall_intercept_shared
 	PROPERTIES VERSION ${SYSCALL_INTERCEPT_VERSION}
@@ -259,7 +280,7 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/cmake/cmake_uninstall.cmake.in"
 	"${CMAKE_CURRENT_BINARY_DIR}/cmake/cmake_uninstall.cmake"
 	IMMEDIATE @ONLY)
 add_custom_target(uninstall
-	"${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/cmake_uninstall.cmake")
+	"${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_BINARY_DIR}/cmake/cmake_uninstall.cmake") 
 
 add_subdirectory(doc)
 

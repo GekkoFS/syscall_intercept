@@ -52,11 +52,11 @@ void debug_dump(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 #define INTERCEPTOR_EXIT_CODE 111
 
-__attribute__((noreturn)) void xabort_errno(int error_code, const char *msg);
+__attribute__((noreturn)) void xabort_errno(int error_code, const char *func, const char *msg);
 
-__attribute__((noreturn)) void xabort(const char *msg);
+__attribute__((noreturn)) void xabort(const char *func, const char *msg);
 
-void xabort_on_syserror(long syscall_result, const char *msg);
+void xabort_on_syserror(long syscall_result, const char *func, const char *msg);
 
 struct syscall_desc {
 	int nr;
@@ -147,7 +147,7 @@ struct intercept_desc {
 	 * delta between vmem addresses and addresses in symbol tables,
 	 * non-zero for dynamic objects
 	 */
-	unsigned char *base_addr;
+	uint8_t *base_addr;
 
 	/* where the object is in fs */
 	const char *path;
@@ -168,17 +168,17 @@ struct intercept_desc {
 	struct section_list rela_tables;
 
 	/* Where the text starts inside the shared object */
-	unsigned long text_offset;
+	uint64_t text_offset;
 
 	/*
 	 * Where the text starts and ends in the virtual memory seen by the
 	 * current process.
 	 */
-	unsigned char *text_start;
-	unsigned char *text_end;
+	uint8_t *text_start;
+	uint8_t *text_end;
 
 	struct patch_desc *items;
-	unsigned count;
+	uint32_t count;
 
 	uint8_t *jump_table;
 
@@ -192,7 +192,7 @@ void mark_jump(const struct intercept_desc *desc, const unsigned char *addr);
 void allocate_trampoline(struct intercept_desc *desc);
 void find_syscalls(struct intercept_desc *desc);
 
-void create_patch(struct intercept_desc *desc, unsigned char **dst);
+void create_patch(struct intercept_desc *desc);
 
 /*
  * Actually overwrite instructions in glibc.
@@ -201,7 +201,7 @@ void activate_patches(struct intercept_desc *desc);
 
 #define SURROUNDING_INSTRS_NUM	13
 #define SYSCALL_IDX		6
-
+#define TYPE_AVOID		-3
 #define TYPE_GW			-2
 #define TYPE_MID		-1
 //Implicitly: TYPE_SML >= 0
