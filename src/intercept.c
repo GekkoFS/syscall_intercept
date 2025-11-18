@@ -93,9 +93,22 @@ int (*intercept_hook_point)(long syscall_number,
 			long *result)
 	__attribute__((visibility("default")));
 
-void (*intercept_hook_point_clone_child)(void)
+void (*intercept_hook_point_clone_child)(
+			unsigned long flags, void *child_stack,
+			int *ptid, int *ctid,
+			long newtls)
 	__attribute__((visibility("default")));
-void (*intercept_hook_point_clone_parent)(long)
+void (*intercept_hook_point_clone_parent)(
+			unsigned long flags, void *child_stack,
+			int *ptid, int *ctid,
+			long newtls, long returned_pid)
+	__attribute__((visibility("default")));
+
+void (*intercept_hook_point_post_kernel)(long syscall_number,
+			long arg0, long arg1,
+			long arg2, long arg3,
+			long arg4, long arg5,
+			long result)	
 	__attribute__((visibility("default")));
 
 bool debug_dumps_on;
@@ -617,22 +630,21 @@ xabort_on_syserror(long syscall_result, const char *func, const char *msg)
 static inline __attribute__((section(".text.irqentry"))) int64_t
 binary_search(const struct patch_desc *items, uint32_t count, uint64_t ret_addr)
 {
-	// preserve last hit as a tiny "cache"
-	static int64_t mid = 0;
+	if (count == 0) return -1;
 	int64_t low = 0;
 	int64_t high = count - 1;
+	int64_t mid;
 
-	do {
+	while (low <= high) {
+		mid = low + (high - low) / 2;
+
 		if ((uint64_t)items[mid].return_address == ret_addr)
 			return mid;
 		else if ((uint64_t)items[mid].return_address < ret_addr)
 			low = mid + 1;
 		else
 			high = mid - 1;
-
-		mid = (low + high) / 2;
-	} while (low <= high);
-
+	}
 	return -1;
 }
 
@@ -672,8 +684,8 @@ detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_a
 						return (struct wrapper_ret){sn, reloc_addr};
 					break;
 				}
+			 break;
 			}
-			break;
 		}
 	}
 
@@ -725,14 +737,38 @@ intercept_post_clone_log_syscall(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
  * and a new stack pointer is used in the child thread.
  */
 __attribute__((section(".text.irqentry"))) void
-intercept_routine_post_clone(int64_t a0)
+intercept_routine_post_clone(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
+			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
 {
+
+	(void) a6;
+	struct syscall_desc desc = {
+		.nr = (int)a7, /* ignore higher 32 bits */
+		.args[0] = a0,
+		.args[1] = a1,
+		.args[2] = a2,
+		.args[3] = a3,
+		.args[4] = a4,
+		.args[5] = a5
+	};
 	if (a0 == 0) {
 		if (intercept_hook_point_clone_child != NULL)
-			intercept_hook_point_clone_child();
+			intercept_hook_point_clone_child(
+					(unsigned long)desc.args[0],
+					(void *)desc.args[1],
+					(int *)desc.args[2],
+					(int *)desc.args[3],
+					desc.args[4]);
 	} else {
 		if (intercept_hook_point_clone_parent != NULL)
-			intercept_hook_point_clone_parent(a0);
+			intercept_hook_point_clone_parent(
+					(unsigned long)desc.args[0],
+					(void *)desc.args[1],
+					(int *)desc.args[2],
+					(int *)desc.args[3],
+					desc.args[4],
+					a0);
+
 	}
 }
 
@@ -848,11 +884,26 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		 * after the clone syscall (syscall_no_intercept).
 		 */
 		if (desc.nr == SYS_clone)
-			intercept_routine_post_clone(result.a0);
+			intercept_routine_post_clone(a0, a1, a2, a3, a4, a5, a6, a7);
 #ifdef SYS_clone3
 		else if (desc.nr == SYS_clone3)
-			intercept_routine_post_clone(result.a0);
+			intercept_routine_post_clone(a0, a1, a2, a3, a4, a5, a6, a7);
 #endif
+
+		/*
+			* some users might want to execute code after a syscall has
+			* been forwarded to the kernel (for example, to check its
+			* return value).
+			*/
+		if (intercept_hook_point_post_kernel != NULL)
+			intercept_hook_point_post_kernel(desc.nr,
+					desc.args[0],
+					desc.args[1],
+					desc.args[2],
+					desc.args[3],
+					desc.args[4],
+					desc.args[5],
+					result.a0);
 	}
 
 	if (logging_enabled)

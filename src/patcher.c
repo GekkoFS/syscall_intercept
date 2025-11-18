@@ -622,6 +622,30 @@ create_patch(struct intercept_desc *desc)
 			patch->syscall_num = TYPE_GW;
 			patch->return_register = REG_RA;
 
+			if (!desc->uses_trampoline) {
+				position_patch(patch);
+				extern void asm_entry_point(void);
+				uintptr_t jalr_addr = (uintptr_t)patch->return_address -
+							JUMP_2GB_INS_SIZE;
+				ptrdiff_t delta = (uintptr_t)asm_entry_point - jalr_addr;
+
+				if (delta < JUMP_2GB_NEG_REACH || delta > JUMP_2GB_POS_REACH) {
+					char buffer[0x1000];
+					int l = snprintf(buffer, sizeof(buffer),
+						"unintercepted syscall at: %s 0x%lx (out of range for GW without trampoline)\n",
+						desc->path, patch->syscall_offset);
+					intercept_log(buffer, (size_t)l);
+
+					free(patch->surrounding_instrs);
+					size_t num_to_move = desc->count - patch_i - 1;
+					if (num_to_move > 0)
+						memmove(patch, patch + 1, num_to_move * sizeof(*patch));
+					desc->count--;
+					patch_i--;
+					continue;
+				}
+			}
+
 		} else if (length >= TYPE_MID_SIZE) {
 			patch->syscall_num = TYPE_MID;
 			patch->return_register = REG_RA;
@@ -635,10 +659,17 @@ create_patch(struct intercept_desc *desc)
 				patch->syscall_offset);
 
 			intercept_log(buffer, (size_t)l);
-			xabort(__func__, "not enough space for patching around syscall");
+			free(patch->surrounding_instrs);
+			size_t num_to_move = desc->count - patch_i - 1;
+			if (num_to_move > 0)
+				memmove(patch, patch + 1, num_to_move * sizeof(*patch));
+			desc->count--;
+			patch_i--;
+			continue;
 		}
-
-		position_patch(patch);
+if (patch->syscall_num != TYPE_GW || desc->uses_trampoline)
+			position_patch(patch);
+//		position_patch(patch);
 
 		uint8_t *last_instr_addr = patch->dst_jmp_patch + patch->patch_size_bytes;
 #ifdef __riscv_c

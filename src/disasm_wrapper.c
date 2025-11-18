@@ -165,6 +165,10 @@ get_a7(struct intercept_disasm_result *result, struct cs_insn *insn)
 	case RISCV_INS_C_LI:
 		result->a7_set = insn->detail->riscv.operands[1].imm;
 		return;
+	/* c.mv a7, reg is encoded as c.add a7, reg */
+	case RISCV_INS_C_ADD:
+		result->is_a7_modified = true;
+		return;
 #endif
 	case RISCV_INS_ADDI:
 		if (insn->detail->riscv.operands[1].reg == RISCV_REG_ZERO) {

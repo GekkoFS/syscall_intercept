@@ -137,15 +137,15 @@ function(set_isa_extensions)
 	endif()
 
 	# If compilation test succeeded, add those extensions to compiling process
-	if(comp_result EQUAL 0)
-		message(STATUS "Detected ISA extensions: ${isa_extensions}")
-		target_compile_options(syscall_intercept_base_c
-					PUBLIC "-march=${isa_extensions}")
-		target_compile_options(syscall_intercept_base_asm
-					PUBLIC "-march=${isa_extensions}")
-		target_compile_options(syscall_intercept_base_clf
-					PUBLIC "-march=${isa_extensions}")
-	endif()
+	#if(comp_result EQUAL 0)
+	#	message(STATUS "Detected ISA extensions: ${isa_extensions}")
+	#	target_compile_options(syscall_intercept_base_c
+	#					PUBLIC "-march=${isa_extensions}")
+	#		target_compile_options(syscall_intercept_base_asm
+	#					PUBLIC "-march=${isa_extensions}")
+	#		target_compile_options(syscall_intercept_base_clf
+	#					PUBLIC "-march=${isa_extensions}")
+	#endif()
 endfunction()
 
 set_isa_extensions()

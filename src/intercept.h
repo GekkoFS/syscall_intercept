@@ -201,7 +201,7 @@ void activate_patches(struct intercept_desc *desc);
 
 #define SURROUNDING_INSTRS_NUM	13
 #define SYSCALL_IDX		6
-
+#define TYPE_AVOID		-3
 #define TYPE_GW			-2
 #define TYPE_MID		-1
 //Implicitly: TYPE_SML >= 0
