@@ -123,6 +123,9 @@
 		STORE_G	15
 		STORE_G	16
 		STORE_G	17
+		STORE_G	18
+		STORE_G	19
+		STORE_G	20
 		STORE_G	28
 		STORE_G	29
 		STORE_G	30
@@ -170,6 +173,9 @@
 		LOAD_G	15
 		LOAD_G	16
 		LOAD_G	17
+		LOAD_G	18
+		LOAD_G	19
+		LOAD_G	20
 		LOAD_G	28
 		LOAD_G	29
 		LOAD_G	30
@@ -517,6 +523,8 @@ detect_cur_patch_wrapper:
 	mv	a1, a7
 	// a2 will hold TYPE_GW ret addr
 	ld	a2, UNUSED_OFF1(s0)
+    // a3 will hold TYPE_JAL ret addr (t0 saved at offset 40 from sp in trampoline)
+    ld  a3, 40(s0)
 
 	call	detect_cur_patch
 	/*
@@ -525,38 +533,31 @@ detect_cur_patch_wrapper:
 	 * a1 = addr of relocated instrs
 	 */
 
-	// store results (a0 is only relevant to TYPE_SML):
+	// store results 
 	sd	a1, RELOC_ADDR_OFF(s0)
 
-	// TYPE_SML	a0 >= 0
-	// TYPE_MID	a0 == -1
-	// TYPE_GW	a0 == -2
-	bgez	a0, .Lsml
-	addi	a0, a0, 1
-	beqz	a0, .Lmid
-	/*
-	 * NOTE: No instructions should be placed between the branches above and the
-	 *       .Lgw symbol, as this gap is treated as a fallthrough. Or, uncomment
-	 *       the j instruction below before adding any new instructions.
-	 */
-	//j	.Lgw
-
-.Lgw:
+    // Check for TYPE_JAL (-6)
+    li t1, -6
+    beq a0, t1, .Ljal
+    
+    // Otherwise assume GP/GW logic (-4, -5, or legacy -2)
+    j .Lgp
+    
+.Lgp:
 	ld	a0, UNUSED_OFF1(s0)
 	sd	a0, RET_ADDR_OFF(s0)
 	j	.Ldone
 
-.Lmid:
-	ld	a0, 0(s0)
-	ld	a1, 8(s0)
-	sd	a0, RET_ADDR_OFF(s0)
-	sd	a1, ORIG_RA_OFF(s0)
-	j	.Ldone
+.Ljal:
+    // Restore RA
+    ld a0, UNUSED_OFF1(s0)
+    sd a0, 0(s0)
+    
+    // Set RET_ADDR_OFF to t0 (JAL return addr), which is the key for get_cur_patch
+    ld a0, 40(s0)
+    sd a0, RET_ADDR_OFF(s0)
+    j .Ldone
 
-.Lsml:
-	// original a7 value was stored in s1 prior to detect_cur_patch() call
-	sd	s1, RET_ADDR_OFF(s0)
-	// detect_cur_patch() returned syscall_num, replace old a7 (x17) on the stack
 	SDSP_G	a0, 17
 
 .Ldone:
@@ -615,47 +616,99 @@ intercept_routine_wrapper:
 	ret
 
 .Lunh_clone:	// clones with separate stack space and vfork()
-	// restore original context before cloning
-	LOAD_CONTEXT_EPILOGUE
 
-	/*
-	 * Execute spinlock_aq before MV_STACK_TO_SHR because multiple threads can
-	 * create new threads, which may lead to contention in the SHR .bss. Being
-	 * outside of LOAD_CONTEXT_EPILOGUE and STORE_CONTEXT_PROLOGUE forces the
-	 * use of extra space available on the stack to store and load ra and a0.
-	 */
-	sd	ra, UNUSED_OFF1(sp)
-	sd	a0, UNUSED_OFF2(sp)
-	la	a0, lock_SHR
-	call	spinlock_aq
-	ld	ra, UNUSED_OFF1(sp)
-	ld	a0, UNUSED_OFF2(sp)
-	// move stack data to SHR .bss for a very independent child (CLONE_SETTLS)
-	MV_STACK_TO_SHR
-
+	ld	t0, 80(sp)
+	li	s4, 0
+	beqz	t0, .Lshared_stack
+	
+	// Separate Stack.
+	li	s4, 1
+	ld	t1, ORIG_RA_OFF(s0)
+	ld	t2, RET_ADDR_OFF(s0)
+	ld	t3, RELOC_ADDR_OFF(s0)
+	ld	t4, 152(sp) // App s4
+	
+	addi	t0, t0, -32
+	sd	t1, 0(t0)
+	sd	t2, 8(t0)
+	sd	t3, 16(t0)
+	sd	t4, 24(t0)
+	
+	sd	t0, 80(sp) // Update a1
+	
+.Lshared_stack:
+	LOAD_G	10
+	LOAD_G	11
+	LOAD_G	12
+	LOAD_G	13
+	LOAD_G	14
+	LOAD_G	15
+	LOAD_G	16
+	LOAD_G	17
+	
 	ecall
-
-	// move data back from SHR to the stack
-	MV_SHR_TO_STACK
-	// release lock
-	sd	ra, UNUSED_OFF1(sp)
-	sd	a0, UNUSED_OFF2(sp)
-	la	a0, lock_SHR
-	call	spinlock_rl
-	ld	ra, UNUSED_OFF1(sp)
-	ld	a0, UNUSED_OFF2(sp)
-
-	// save again context for each thread before going into C again
+	
+	beqz	a0, .Lchild_return
+	
+	// PARENT
 	STORE_CONTEXT_PROLOGUE
-	// save a0 for intercept_routine_post_clone
 	mv	s0, a0
-
 	call	intercept_post_clone_log_syscall
-
 	mv	a0, s0
 	call	intercept_routine_post_clone
-
-	// restore context after C functions
+	LOAD_CONTEXT_EPILOGUE
+	ret
+	
+.Lchild_return:
+	// CHILD
+	beqz	s4, .Lchild_shared
+	
+	// Separate Stack
+	ld	t1, 0(sp)
+	ld	t2, 8(sp)
+	ld	t3, 16(sp)
+	ld	s4, 24(sp) // Restore App s4
+	
+	addi	sp, sp, 32 // Pop metadata
+	
+	// Create Frame
+	STORE_CONTEXT_PROLOGUE
+	addi	s0, sp, CONTEXT_SIZE
+	
+	// Fill Frame
+	sd	t1, ORIG_RA_OFF(s0)
+	sd	t2, RET_ADDR_OFF(s0)
+	sd	t3, RELOC_ADDR_OFF(s0)
+	// Frame s4 slot is already filled by STORE_CONTEXT (current s4).
+	// But current s4 is RESTORED value. Which is correct.
+	// Wait, STORE_CONTEXT saves s4.
+	// We loaded App s4 into s4 register BEFORE STORE_CONTEXT?
+	// Yes: `ld s4, 24(sp)`.
+	// Then `STORE_CONTEXT`.
+	// So Frame has App s4. Correct.
+	
+	j .Lchild_header
+	
+.Lchild_shared:
+	// Shared Stack (Fork/Vfork)
+	// We are on (copy of) Parent Stack.
+	// Frame exists. s0 is valid.
+	// Logic is same as Parent essentially.
+	// BUT we need to log as Child.
+	// We might need to save context if we call functions.
+	// Parent path calls STORE_CONTEXT_PROLOGUE.
+	// Child Shared path should too.
+	STORE_CONTEXT_PROLOGUE
+	addi	s0, sp, CONTEXT_SIZE
+	// Metadata is already in Frame (Copy).
+	
+.Lchild_header:
+	// Common Child
+	// Check logging
+	mv	s0, a0
+	call	intercept_post_clone_log_syscall
+	mv	a0, s0
+	call	intercept_routine_post_clone
 	LOAD_CONTEXT_EPILOGUE
 	ret
 	.cfi_endproc

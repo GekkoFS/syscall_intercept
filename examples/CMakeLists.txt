@@ -37,5 +37,20 @@ add_library(fork_ban SHARED fork_ban.c)
 
 target_link_libraries(fork_ban PRIVATE syscall_intercept_shared)
 
+add_executable(test_complex test_complex.c)
+
 add_library(syscall_logger SHARED syscall_logger.c syscall_desc.c)
-target_link_libraries(syscall_logger PRIVATE syscall_intercept_shared)
+target_link_libraries(syscall_logger
+	PRIVATE
+	${CMAKE_DL_LIBS}
+	syscall_intercept_static
+)
+
+add_library(debug_hook SHARED debug_hook.c)
+target_link_libraries(debug_hook syscall_intercept_static ${CMAKE_DL_LIBS})
+
+add_executable(test_syscalls_coverage test_syscalls_coverage.c)
+
+find_package(Threads REQUIRED)
+add_executable(test_threads_clone test_threads_clone.c)
+target_link_libraries(test_threads_clone Threads::Threads)

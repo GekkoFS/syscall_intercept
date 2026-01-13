@@ -101,6 +101,7 @@ static const struct syscall_desc table[] = {
 #endif
 	SARGS(setitimer, rdec, arg_, arg_, arg_),
 	SARGS(getpid, rdec, arg_none),
+    SARGS(getppid, rdec, arg_none),
 	SARGS(sendfile, rdec, arg_fd, arg_fd, arg_, arg_),
 	SARGS(socket, rdec, arg_, arg_, arg_),
 	SARGS(connect, rdec, arg_fd, arg_, arg_),
@@ -520,3 +521,5 @@ get_syscall_desc(long syscall_number, const long args[6])
 
 	return table + syscall_number;
 }
+
+

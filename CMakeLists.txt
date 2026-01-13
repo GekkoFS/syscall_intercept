@@ -164,8 +164,7 @@ if(NOT WITH_MAGIC_SYSCALLS)
 					COMPILE_OPTIONS "-Wno-pedantic")
 endif()
 
-set_property(TARGET syscall_intercept_base_c
-	APPEND PROPERTY COMPILE_FLAGS ${capstone_CFLAGS})
+target_compile_options(syscall_intercept_base_c PRIVATE ${capstone_CFLAGS})
 
 add_library(syscall_intercept_unscoped STATIC
 		$<TARGET_OBJECTS:syscall_intercept_base_c>

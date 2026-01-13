@@ -31,7 +31,9 @@
  */
 
 #include "libsyscall_intercept_hook_point.h"
+
 #include "syscall_desc.h"
+
 
 #include <errno.h>
 #include <limits.h>
@@ -57,7 +59,9 @@ exchange_buffer_offset(size_t *expected, size_t new)
 			__ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
 }
 
-#define DUMP_TRESHOLD (sizeof(buffer) - 0x1000)
+#define DUMP_TRESHOLD 1
+
+
 
 static void
 append_buffer(const char *data, ssize_t len)
@@ -75,6 +79,7 @@ append_buffer(const char *data, ssize_t len)
 
 		if (exchange_buffer_offset(&offset, offset + len)) {
 			memcpy(buffer + offset, data, len);
+			__atomic_fetch_sub(&writers, 1, __ATOMIC_SEQ_CST);
 			break;
 		}
 
@@ -82,10 +87,12 @@ append_buffer(const char *data, ssize_t len)
 	}
 
 	if (offset + len > DUMP_TRESHOLD) {
+        syscall_no_intercept(SYS_write, 2, "Flushing\n", 9);
 		while (__atomic_load_n(&writers, __ATOMIC_SEQ_CST) != 0)
 			syscall_no_intercept(SYS_sched_yield);
 
 		syscall_no_intercept(SYS_write, log_fd, buffer, buffer_offset);
+        syscall_no_intercept(SYS_write, 2, "Flushed\n", 8);
 		__atomic_store_n(&buffer_offset, 0, __ATOMIC_SEQ_CST);
 	}
 }
@@ -99,7 +106,7 @@ print_cstr(char *dst, const char *str)
 	return dst;
 }
 
-static const char xdigit[16] = "0123456789abcdef";
+static const char xdigit[] = "0123456789abcdef";
 
 static char *
 print_hex(char *dst, long n)
@@ -745,6 +752,17 @@ static char *
 print_known_syscall(char *dst, const struct syscall_desc *desc,
 			const long args[static 6], long result)
 {
+    syscall_no_intercept(SYS_write, 2, "PKS: Start\n", 11);
+    if (!desc) {
+         syscall_no_intercept(SYS_write, 2, "PKS: Desc NULL!\n", 16);
+    } else {
+         if (!desc->name) {
+             syscall_no_intercept(SYS_write, 2, "PKS: Name NULL!\n", 16);
+         } else {
+             syscall_no_intercept(SYS_write, 2, "PKS: Name OK\n", 13);
+         }
+    }
+
 	dst = print_cstr(dst, desc->name);
 	*dst++ = '(';
 
@@ -804,15 +822,24 @@ print_syscall(const struct syscall_desc *desc,
 {
 	char local_buffer[0x300];
 	char *c;
+    
+    syscall_no_intercept(SYS_write, 2, "In print_syscall\n", 17);
 
-	if (desc != NULL)
+	if (desc != NULL) {
+        syscall_no_intercept(SYS_write, 2, "Known syscall\n", 14);
 		c = print_known_syscall(local_buffer, desc, args, result);
-	else
+    } else {
+        syscall_no_intercept(SYS_write, 2, "Unknown syscall\n", 16);
 		c = print_unknown_syscall(local_buffer, syscall_number,
 					args, result);
+    }
+    
+    syscall_no_intercept(SYS_write, 2, "Formatted\n", 10);
 
 	*c++ = '\n';
 	append_buffer(local_buffer, c - local_buffer);
+    
+    syscall_no_intercept(SYS_write, 2, "Appended\n", 9);
 }
 
 static int
@@ -822,6 +849,9 @@ hook(long syscall_number,
 		long arg4, long arg5,
 		long *result)
 {
+	// Debug hook entry
+    const char *msg = "Hook entry\n"; syscall_no_intercept(SYS_write, 2, msg, 11);
+    
 	struct wrapper_ret ret;
 	long args[6] = {arg0, arg1, arg2, arg3, arg4, arg5};
 	const struct syscall_desc *desc =
@@ -834,11 +864,18 @@ hook(long syscall_number,
 						buffer, buffer_offset);
 	}
 
+    // Trace execution
+    syscall_no_intercept(SYS_write, 2, "Doing syscall\n", 14);
+    
 	ret = syscall_no_intercept(syscall_number,
 					arg0, arg1, arg2, arg3, arg4, arg5);
 	*result = ret.a0;
 
+    syscall_no_intercept(SYS_write, 2, "Syscall done\n", 13);
+
 	print_syscall(desc, syscall_number, args, *result);
+
+    syscall_no_intercept(SYS_write, 2, "Print done\n", 11);
 
 	return 0;
 }

@@ -48,6 +48,13 @@
 #include <syscall.h>
 #include "capstone_wrapper.h"
 
+struct wrapper_ret {
+    long a0;
+    long a1;
+};
+
+struct wrapper_ret syscall_no_intercept(long syscall_number, ...);
+
 struct intercept_disasm_context {
 	csh handle;
 	cs_insn *insn;
@@ -205,11 +212,8 @@ check_ra(struct intercept_disasm_result *result, struct cs_insn *insn)
 }
 
 /*
- * This helps only the TYPE_SML patch when there is a register which gets set
- * immediately after ecall. In these situations (which are quite frequent) the
- * patching size is only 4 bytes (in that case, only ecall gets replaced with jal)
- * because on the way back to glibc, the register that gets set immediately after
- * ecall is used for the absolute jump.
+ * This helps patch identification when there is a register which gets set
+ * immediately after ecall.
  */
 static inline void
 check_reg_set(struct intercept_disasm_result *result, struct cs_insn *insn)
@@ -261,7 +265,8 @@ intercept_disasm_next_instruction(struct intercept_disasm_context *context,
 	struct intercept_disasm_result result = {
 		.address = code,
 		// syscall can be 0 so set it to -1 initially
-		.a7_set = -1
+		.a7_set = -1,
+		.is_ret = false
 	};
 	const unsigned char *start = code;
 	size_t size = (size_t)(context->end - code + 1);
@@ -271,6 +276,17 @@ intercept_disasm_next_instruction(struct intercept_disasm_context *context,
 	    &address, context->insn)) {
 		return result;
 	}
+    // Debug logging
+    // static int log_count = 0;
+    // if (log_count < 20) {
+    //    log_count++;
+    //    char msg[128];
+    //    // Cannot safely snprintf effectively here without pulling dependencies, 
+    //    // but let depends on if we can match ecall
+    // }
+    if (context->insn->id == RISCV_INS_ECALL) {
+         // syscall_no_intercept(SYS_write, 2, "DISASM: FOUND ECALL\n", 20);
+    }
 
 	result.length = context->insn->size;
 
@@ -297,6 +313,8 @@ intercept_disasm_next_instruction(struct intercept_disasm_context *context,
 	for (uint8_t i = 0; i < grp_count; ++i) {
 		switch (context->insn->detail->groups[i]) {
 		case RISCV_GRP_RET:
+			result.is_ret = true;
+			/* fallthrough */
 		case RISCV_GRP_CALL:
 		case RISCV_GRP_JUMP:
 		case RISCV_GRP_BRANCH_RELATIVE:

@@ -118,6 +118,7 @@ struct patch_desc {
 	bool is_ra_used_before;
 	bool is_ra_used_after;
 	uint8_t return_register;
+	int32_t trampoline_offset;
 };
 
 /*
@@ -184,7 +185,10 @@ struct intercept_desc {
 
 	/* the RISC-V version only needs one trampoline per patched library */
 	uint8_t *trampoline_address;
+	int32_t trampoline_offset;
 };
+
+
 
 bool has_jump(const struct intercept_desc *desc, const uint8_t *addr);
 void mark_jump(const struct intercept_desc *desc, const unsigned char *addr);
@@ -202,21 +206,13 @@ void activate_patches(struct intercept_desc *desc);
 #define SURROUNDING_INSTRS_NUM	13
 #define SYSCALL_IDX		6
 #define TYPE_AVOID		-3
-#define TYPE_GW			-2
-#define TYPE_MID		-1
-//Implicitly: TYPE_SML >= 0
+// Implicitly: TYPE_SML >= 0 (Removed logic, but values >0 are syscalls)
+#define TYPE_GP_COMPLETE	-4
+#define TYPE_GP_FAILSAFE	-5
+#define TYPE_JAL            -6
+#define TYPE_IGNORE         -100
 
-#define TYPE_MID_SIZE		(MODIFY_SP_INS_SIZE + \
-				STORE_LOAD_INS_SIZE + \
-				JAL_INS_SIZE + \
-				STORE_LOAD_INS_SIZE + \
-				MODIFY_SP_INS_SIZE)
-
-#define TYPE_GW_SIZE		(MODIFY_SP_INS_SIZE + \
-				STORE_LOAD_INS_SIZE + \
-				JUMP_2GB_INS_SIZE + \
-				STORE_LOAD_INS_SIZE + \
-				MODIFY_SP_INS_SIZE)
+// Removed legacy sizes (TYPE_MID_SIZE, TYPE_GW_SIZE)
 
 #define TRAMPOLINE_SIZE 	(STORE_LOAD_INS_SIZE + \
 				JUMP_ABS_INS_SIZE)

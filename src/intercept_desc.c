@@ -36,12 +36,12 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdint.h>
-#include <inttypes.h>
-#include <string.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <errno.h>
+#include <inttypes.h>
 
 #include "intercept.h"
 #include "intercept_util.h"
@@ -527,6 +527,34 @@ fill_up_patch(struct intercept_desc *desc, struct patch_desc *patch,
 
 	patch->syscall_offset = (uint64_t)syscall_offset;
 	patch->syscall_idx = syscall_idx;
+
+    // Calculate syscall number to filter rt_sigreturn
+    int32_t syscall_num = -1;
+	for (size_t i = 0; i < syscall_idx; ++i) {
+		if (has_jump(desc, surr[i].address))
+			syscall_num = -1;
+
+		if (surr[i].a7_set > -1)
+			syscall_num = surr[i].a7_set;
+		else if (surr[i].is_a7_modified)
+			syscall_num = -1;
+	}
+
+    // Default to GP_COMPLETE for now, as we use global trampoline.
+    patch->syscall_num = TYPE_GP_COMPLETE; 
+
+    if (syscall_num != -1) {
+         // Only patch identified syscalls (set type to GP_COMPLETE)
+         patch->syscall_num = TYPE_GP_COMPLETE;
+    } else {
+         // Skip patching unknowns to avoid hitting rt_sigreturn
+         patch->syscall_num = 999;
+    }
+
+    // Safety check for rt_sigreturn (139) used by libc
+    if (syscall_num == 139) {
+        patch->syscall_num = 139; // This will cause activate_patches to skip it
+    }
 }
 
 /*
@@ -550,6 +578,10 @@ static void
 crawl_text(struct intercept_desc *desc)
 {
 	uint8_t *code = desc->text_start;
+    char buf[256];
+    // Simple hex conversion for logging without printf
+    // syscall_no_intercept(SYS_write, 2, "Crawl text start\n", 17);
+    (void)buf;
 
 	uint8_t instrs_num = SURROUNDING_INSTRS_NUM;
 
@@ -576,9 +608,12 @@ crawl_text(struct intercept_desc *desc)
 		if (result.has_ip_relative_opr)
 			mark_jump(desc, result.rip_ref_addr);
 
-		if (surr[SYSCALL_IDX].is_syscall && is_not_filtered(desc, surr)) {
-			struct patch_desc *patch = add_new_patch(desc);
-			fill_up_patch(desc, patch, surr, SYSCALL_IDX);
+        if (surr[SYSCALL_IDX].is_syscall) {
+            bool ok = is_not_filtered(desc, surr);
+            if (ok) {
+			    struct patch_desc *patch = add_new_patch(desc);
+			    fill_up_patch(desc, patch, surr, SYSCALL_IDX);
+            }
 		}
 
 		// shift each element to the left (decrement), FIFO
@@ -624,139 +659,23 @@ crawl_text(struct intercept_desc *desc)
  * useful while looking for space for a trampoline table close
  * to some text section.
  */
-static uintptr_t
-get_min_address(void)
-{
-	static uintptr_t min_address;
 
-	if (min_address != 0)
-		return min_address;
-
-	min_address = 0x10000; /* best guess */
-
-	int fd = syscall_no_intercept(SYS_openat, AT_FDCWD,
-					"/proc/sys/vm/mmap_min_addr", O_RDONLY);
-
-	if (fd >= 0) {
-		char line[64];
-		ssize_t r;
-		r = syscall_no_intercept(SYS_read, fd, line, sizeof(line) - 1);
-		if (r > 0) {
-			line[r] = '\0';
-			min_address = (uintptr_t)atoll(line);
-		}
-
-		syscall_no_intercept(SYS_close, fd);
-	}
-
-	return min_address;
-}
-
-static uint8_t *
-get_guess(const uint8_t *text_start, uint8_t *guess)
-{
-	FILE *maps;
-	char line[0x2000];
-
-	if ((maps = fopen("/proc/self/maps", "r")) == NULL)
-		xabort(__func__, "fopen /proc/self/maps");
-
-	while ((fgets(line, sizeof(line), maps)) != NULL) {
-		uint8_t *start;
-		uint8_t *end;
-
-		if (sscanf(line, "%p-%p", (void **)&start, (void **)&end) != 2)
-			xabort(__func__, "sscanf from /proc/self/maps");
-
-		/*
-		 * Let's see if an existing mapping overlaps
-		 * with the guess!
-		 */
-		if (end < guess)
-			continue; /* No overlap, let's see the next mapping */
-
-		if (start >= guess + PAGE_SIZE) {
-			/* The rest of the mappings can't possibly overlap */
-			break;
-		}
-
-		/*
-		 * The next guess is the page following the mapping seen
-		 * just now.
-		 */
-		guess = end;
-
-		if (guess >= text_start + JUMP_2GB_POS_REACH) {
-			/* Too far away */
-			xabort(__func__, "unable to find place for trampoline");
-		}
-	}
-
-	fclose(maps);
-
-	return guess;
-}
-
-/*
- * allocate_trampoline_table
- * Allocates memory close to a text section (close enough
- * to be reachable with 32 bit displacements in jmp instructions).
- * Using mmap syscall with MAP_FIXED flag.
- */
 void
 allocate_trampoline(struct intercept_desc *desc)
 {
-	char *e = getenv("INTERCEPT_NO_TRAMPOLINE");
+    if (desc->trampoline_address != NULL) {
+        desc->uses_trampoline = true;
+        return;
+    }
 
-	/* Use the extra trampoline table by default */
-	desc->uses_trampoline = (e == NULL) || (e[0] == '0');
-
-	if (!desc->uses_trampoline) {
-		desc->trampoline_address = NULL;
-		return;
-	}
-
-	uint8_t *guess; /* Where we would like to allocate the table */
-
-	if ((uintptr_t)desc->text_end < (uintptr_t)-JUMP_2GB_NEG_REACH) {
-		/* start from the bottom of memory */
-		guess = (void *)0;
-	} else {
-		/*
-		 * start from the lowest possible address, that can be reached
-		 * from the text segment using a 32 bit displacement.
-		 * Round up to a memory page boundary, as this address must be
-		 * mappable.
-		 */
-		guess = desc->text_end + JUMP_2GB_NEG_REACH;	// JUMP_2GB_NEG_REACH is a negative value
-		guess = (uint8_t *)(((uintptr_t)guess)
-				& ~((uintptr_t)(0xfff))) + 0x1000;
-	}
-
-	if ((uintptr_t)guess < get_min_address())
-		guess = (void *)get_min_address();
-
-	// Give mmap() 4 attempts because of MAP_FIXED_NOREPLACE
-	for (uint8_t i = 0; i < 4; ++i) {
-		guess = get_guess(desc->text_start, guess);
-		desc->trampoline_address = mmap(guess, TRAMPOLINE_SIZE,
-						PROT_READ | PROT_WRITE | PROT_EXEC,
-						MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANON,
-						-1, 0);
-
-		// retry when range collide with an existing mapping
-		if (desc->trampoline_address == MAP_FAILED && errno != EEXIST) {
-			xabort_errno(errno, __func__, strerror_no_intercept(errno));
-		// verify the returned address for backward-compatible (Linux < v4.17)
-		} else if (desc->trampoline_address != guess) {
-			munmap(desc->trampoline_address, TRAMPOLINE_SIZE);
-		} else {
-			break;
-		}
-	}
-
-	__builtin___clear_cache((char *)guess, (char *)(guess + TRAMPOLINE_SIZE));
+	// With Target-GOT strategy using global init_gpoline,
+	// we do not allocate per-object trampolines for GP_COMPLETE.
+	// We rely on the global trampoline initialized in init_gpoline.
+	desc->uses_trampoline = true;
+	desc->trampoline_address = NULL; // Not used
+	desc->trampoline_offset = 0; // Not used
 }
+
 
 /*
  * find_syscalls
@@ -770,6 +689,7 @@ allocate_trampoline(struct intercept_desc *desc)
 void
 find_syscalls(struct intercept_desc *desc)
 {
+    syscall_no_intercept(SYS_write, 2, "Entering find_syscalls\n", 23);
 	debug_dump("find_syscalls in %s "
 	    "at base_addr 0x%016" PRIxPTR "\n",
 	    desc->path,
@@ -787,9 +707,11 @@ find_syscalls(struct intercept_desc *desc)
 	    (uintptr_t)desc->text_end);
 	allocate_jump_table(desc);
 
-	for (Elf64_Half i = 0; i < desc->symbol_tables.count; ++i)
+	for (Elf64_Half i = 0; i < desc->symbol_tables.count; ++i) {
+        syscall_no_intercept(SYS_write, 2, "Scanning symbol table...\n", 25);
 		find_jumps_in_section_syms(desc,
 		    desc->symbol_tables.headers + i, fd);
+    }
 
 	for (Elf64_Half i = 0; i < desc->rela_tables.count; ++i)
 		find_jumps_in_section_rela(desc,
