@@ -53,7 +53,7 @@ struct wrapper_ret {
     long a1;
 };
 
-struct wrapper_ret syscall_no_intercept(long syscall_number, ...);
+long syscall_no_intercept(long syscall_number, ...);
 
 struct intercept_disasm_context {
 	csh handle;

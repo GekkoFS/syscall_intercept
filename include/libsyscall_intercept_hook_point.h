@@ -86,7 +86,7 @@ extern void (*intercept_hook_point_post_kernel)(long syscall_number,
  * RISC-V: returns the wrapper_ret struct because the a1 register can also
  *         be modified by syscall, syscall convention: ret values: a0/a1.
  */
-struct wrapper_ret
+long
 syscall_no_intercept(long syscall_number, ...);
 
 /*

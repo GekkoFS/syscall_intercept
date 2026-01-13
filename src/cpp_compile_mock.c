@@ -47,11 +47,11 @@ int (*intercept_hook_point)(long syscall_number,
 			long arg4, long arg5,
 			long *result);
 
-struct wrapper_ret
+long
 syscall_no_intercept(long syscall_number, ...)
 {
 	(void) syscall_number;
-	return (struct wrapper_ret){0};
+	return 0;
 }
 
 int

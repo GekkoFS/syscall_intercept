@@ -31,6 +31,7 @@
  */
 
 #include "libsyscall_intercept_hook_point.h"
+#include "../include/libsyscall_intercept_hook_point.h"
 
 #include "syscall_desc.h"
 
@@ -852,7 +853,7 @@ hook(long syscall_number,
 	// Debug hook entry
     const char *msg = "Hook entry\n"; syscall_no_intercept(SYS_write, 2, msg, 11);
     
-	struct wrapper_ret ret;
+	long ret;
 	long args[6] = {arg0, arg1, arg2, arg3, arg4, arg5};
 	const struct syscall_desc *desc =
 		get_syscall_desc(syscall_number, args);
@@ -869,7 +870,7 @@ hook(long syscall_number,
     
 	ret = syscall_no_intercept(syscall_number,
 					arg0, arg1, arg2, arg3, arg4, arg5);
-	*result = ret.a0;
+	*result = ret;
 
     syscall_no_intercept(SYS_write, 2, "Syscall done\n", 13);
 
@@ -883,7 +884,7 @@ hook(long syscall_number,
 static __attribute__((constructor)) void
 start(void)
 {
-	struct wrapper_ret ret;
+	long ret;
 	const char *path = getenv("SYSCALL_LOG_PATH");
 
 	if (path == NULL)
@@ -891,7 +892,7 @@ start(void)
 
 	ret = syscall_no_intercept(SYS_openat, AT_FDCWD,
 					path, O_CREAT | O_RDWR, (mode_t)0700);
-	log_fd = (int)ret.a0;
+	log_fd = (int)ret;
 
 	if (log_fd < 0)
 		syscall_no_intercept(SYS_exit_group, 4);

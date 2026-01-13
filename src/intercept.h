@@ -47,7 +47,6 @@
 #include "disasm_wrapper.h"
 #include "rv_encode.h"
 
-extern bool debug_dumps_on;
 void debug_dump(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 #define INTERCEPTOR_EXIT_CODE 111

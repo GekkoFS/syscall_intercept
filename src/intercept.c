@@ -40,7 +40,10 @@
  * intercept_routine() - the entry point for each hooked syscall
  */
 
-#define DEBUG 1
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#define DEBUG 0
 #include <assert.h>
 #include <stdbool.h>
 #include <elf.h>
@@ -57,12 +60,6 @@
 #include <stdarg.h>
 #include <sys/auxv.h>
 #include <linux/sched.h>
-#include <sys/mman.h>
-#include <errno.h>
-
-#include <linux/sched.h>
-#include <sys/mman.h>
-#include <errno.h>
 
 #include "intercept.h"
 #include "intercept_log.h"
@@ -126,35 +123,29 @@ void (*intercept_hook_point_post_kernel)(long syscall_number,
 
 
 
-bool debug_dumps_on;
-
 void
 debug_dump(const char *fmt, ...)
 {
-	int len;
+#if DEBUG
 	va_list ap;
-
-	if (!debug_dumps_on)
-		return;
+	char buf[1024];
 
 	va_start(ap, fmt);
-	len = vsnprintf(NULL, 0, fmt, ap);
+	int len = vsnprintf(buf, sizeof(buf), fmt, ap);
 	va_end(ap);
 
-	if (len <= 0)
-		return;
-
-	char buf[len + 1];
-
-	va_start(ap, fmt);
-	len = vsprintf(buf, fmt, ap);
-	va_end(ap);
-
-	syscall_no_intercept(SYS_write, 2, buf, len);
+	if (len > 0) {
+        size_t write_len = (size_t)len;
+        if (write_len >= sizeof(buf))
+            write_len = sizeof(buf) - 1;
+		syscall_no_intercept(SYS_write, 2, buf, write_len);
+    }
+#else
+    (void)fmt;
+#endif
 }
 
 static bool logging_enabled;
-static void log_header(void);
 
 
 /* Should all objects be patched, or only libc and libpthread? */
@@ -191,7 +182,6 @@ allocate_next_obj_desc(void)
 
 	++objs_count;
     struct intercept_desc *new_desc = objs + objs_count - 1;
-    syscall_no_intercept(SYS_write, 2, "DEBUG: allocated desc: ", 23);
     // Address dump manually
     // ...
 	return new_desc;
@@ -214,7 +204,7 @@ get_lib_short_name(const char *name)
  * str_match - matching library names.
  * The first string (name) is not null terminated, while
  * the second string (expected) is null terminated.
- * This allows matching e.g.: "libc-2.25.so\0" with "libc\0".
+ * This allows matching e.g.: "libc-2.25.so\0" with "libc".
  * If name_len is 4, the comparison is between: "libc" and "libc".
  */
 static bool
@@ -387,14 +377,11 @@ should_patch_object(uintptr_t addr, const char *path)
 
 	if (addr == self_addr) {
 		debug_dump(" - skipping: matches self\n");
-        syscall_no_intercept(SYS_write, 2, "SKIP SELF (Explicit)\n", 21);
 		return false;
 	} else {
-        // syscall_no_intercept(SYS_write, 2, "Not self\n", 9);
     }
 
     if (strstr(name, "libsyscall_logger")) {
-        syscall_no_intercept(SYS_write, 2, "SKIP LOGGER\n", 12);
         return false;
     }
 
@@ -406,11 +393,9 @@ should_patch_object(uintptr_t addr, const char *path)
 
 	if (str_match(name, len, libc)) {
 		debug_dump(" - libc found\n");
-        syscall_no_intercept(SYS_write, 2, "Libc match: YES\n", 16);
 		libc_found = true;
 		return true;
 	} else {
-        // syscall_no_intercept(SYS_write, 2, "Libc match: NO\n", 15);
     }
 
 	if (patch_all_objs)
@@ -422,7 +407,6 @@ should_patch_object(uintptr_t addr, const char *path)
 	}
 
 	debug_dump(" - skipping, patch_all_objs == false\n");
-    syscall_no_intercept(SYS_write, 2, "Skipping: patch_all_objs=false\n", 29);
 	return false;
 }
 
@@ -433,7 +417,6 @@ struct intercept_desc *allocate_next_obj_desc(void);
 static void
 alloc_trampoline_in_object(struct intercept_desc *desc, struct dl_phdr_info *info)
 {
-    syscall_no_intercept(SYS_write, 2, "DEBUG: alloc_trampoline_in_object entered\n", 40);
 
     // Search for a suitable writable segment close to text
     for (int i = 0; i < info->dlpi_phnum; i++) {
@@ -443,10 +426,7 @@ alloc_trampoline_in_object(struct intercept_desc *desc, struct dl_phdr_info *inf
             uintptr_t seg_start = info->dlpi_addr + phdr->p_vaddr;
             uintptr_t seg_end = seg_start + phdr->p_memsz;
             
-            syscall_no_intercept(SYS_write, 2, "DEBUG: Checking segment...\n", 25);
-            
             if (!desc->text_start) {
-                 syscall_no_intercept(SYS_write, 2, "DEBUG: text_start is 0!\n", 24);
                  continue;
             }
             
@@ -456,7 +436,6 @@ alloc_trampoline_in_object(struct intercept_desc *desc, struct dl_phdr_info *inf
             if (diff > 0x70000000 || diff < -0x70000000) {
                  diff = (int64_t)seg_end - (int64_t)desc->text_start;
                  if (diff > 0x70000000 || diff < -0x70000000) {
-                      syscall_no_intercept(SYS_write, 2, "DEBUG: Segment too far!\n", 24);
                       continue; 
                  }
             }
@@ -471,13 +450,10 @@ alloc_trampoline_in_object(struct intercept_desc *desc, struct dl_phdr_info *inf
                 if (empty) {
                     desc->trampoline_address = (uint8_t *)curr;
                     
-                    syscall_no_intercept(SYS_write, 2, "DEBUG: Found trampoline slot in object\n", 39);
-                    
                     // Make executable
                     uintptr_t page = curr & ~(PAGE_SIZE - 1);
-                    struct wrapper_ret res_s = syscall_no_intercept(SYS_mprotect, page, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC);
-                    if (res_s.a0 != 0) {
-                        syscall_no_intercept(SYS_write, 2, "DEBUG: mprotect FAILED\n", 23);
+                    long res_s = syscall_no_intercept(SYS_mprotect, page, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC);
+                    if (res_s != 0) {
                         return; // Or continue searching?
                     }
                     
@@ -511,12 +487,10 @@ alloc_trampoline_in_object(struct intercept_desc *desc, struct dl_phdr_info *inf
                     return;
                 }
             }
-            syscall_no_intercept(SYS_write, 2, "DEBUG: Segment full, no empty slot\n", 35);
+            // syscall_no_intercept(SYS_write, 2, "DEBUG: Segment full, no empty slot\n", 35);
         }
     }
     
-    syscall_no_intercept(SYS_write, 2, "DEBUG: FAILED to find trampoline slot in object!\n", 49);
-    syscall_no_intercept(SYS_write, 2, "DEBUG: FAILED to find trampoline slot in object, patching may fail\n", 67);
 }
 
 /*
@@ -638,19 +612,17 @@ intercept(int argc, char **argv)
 	cmdline = argv[0];
 	extern void init_tls_offset_table(void);
 
-	init_gpoline();
+
 
 	if (!syscall_hook_in_process_allowed())
 		return;
 
 	vdso_addr = (void *)(uintptr_t)getauxval(AT_SYSINFO_EHDR);
-	debug_dumps_on = getenv("INTERCEPT_DEBUG_DUMP") != NULL;
 	patch_all_objs = (getenv("INTERCEPT_ALL_OBJS") != NULL);
 	path = getenv("INTERCEPT_LOG");
 	logging_enabled = (path != NULL && path[0] != '\0');
 	if (logging_enabled) {
 		intercept_setup_log(path, getenv("INTERCEPT_LOG_TRUNC"));
-		log_header();
 	}
 
 	dl_iterate_phdr(analyze_object, NULL);
@@ -674,30 +646,10 @@ intercept(int argc, char **argv)
 	write_enable_asm_relocation_space(false);
 
 	for (unsigned i = 0; i < objs_count; ++i) {
-        if (objs[i].trampoline_address)
-             syscall_no_intercept(SYS_write, 2, "DEBUG: activating with trampoline\n", 32);
-        else
-             syscall_no_intercept(SYS_write, 2, "DEBUG: activating with NULL trampoline\n", 37);
-
 		activate_patches(objs + i);
     }
 }
 
-/*
- * log_header - part of logging
- * This routine outputs some potentially useful information into the log
- * file, which can be very useful during development.
- */
-static void
-log_header(void)
-{
-	static const char self_decoder[] =
-		"awk 'BEGIN {print \"printf \\\"\\\\e[1;32m$USER\\\\e[33m$\\\\e[m\\n\\\"\"}"
-		" /^\\// {if ($1 != prev) {printf \"\\naddr2line -p -f -e %s\", $1; "
-		"prev = $1} printf \" %s\", $2}' $0 | bash | paste - $0; exit\n";
-
-	intercept_log(self_decoder, sizeof(self_decoder) - 1);
-}
 
 /*
  * xabort_errno - print a message to stderr, and exit the process.
@@ -783,7 +735,7 @@ xabort(const char *func, const char *msg)
  * xabort_on_syserror -- examines the return value of syscall_no_intercept,
  * and calls xabort_errno if the said return value indicates an error.
  */
-void
+void __attribute__((used))
 xabort_on_syserror(long syscall_result, const char *func, const char *msg)
 {
 	if (syscall_error_code(syscall_result) != 0)
@@ -818,12 +770,12 @@ binary_search(const struct patch_desc *items, uint32_t count, uint64_t ret_addr)
  */
 
 
-__attribute__((section(".text.irqentry"))) struct wrapper_ret
+__attribute__((section(".text.irqentry"), used)) struct wrapper_ret
 detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_addr, uint64_t JAL_ret_addr)
 {
 	const uint64_t check_ret_addrs[4] = {MID_ret_addr, SML_ret_addr, GW_ret_addr, JAL_ret_addr};
 
-	for (uint8_t ra_idx = 0; ra_idx < sizeof(check_ret_addrs); ++ra_idx) {
+	for (uint8_t ra_idx = 0; ra_idx < (sizeof(check_ret_addrs) / sizeof(check_ret_addrs[0])); ++ra_idx) {
 		uint64_t ra = check_ret_addrs[ra_idx];
 		for (uint32_t o = 0; o < objs_count; ++o) {
 			// check if current obj contains the return address
@@ -1008,7 +960,7 @@ __attribute__((section(".text.irqentry"))) struct wrapper_ret
 intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
 {
-	struct wrapper_ret result = {.a0 = a0, .a1 = a1};
+	long result_a0 = a0;
 	int forward_to_kernel = true;
 	const struct patch_desc *patch = get_cur_patch(a6);
 	/*
@@ -1027,8 +979,8 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 	};
 
 #ifndef SYSCALL_INTERCEPT_WITHOUT_MAGIC_SYSCALLS
-	if (handle_magic_syscalls(&desc, &result.a0) == 0)
-		return result;
+	if (handle_magic_syscalls(&desc, &result_a0) == 0)
+		return (struct wrapper_ret){.a0 = result_a0, .a1 = a1};
 #endif
 
 	if (logging_enabled)
@@ -1042,7 +994,7 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 					desc.args[3],
 					desc.args[4],
 					desc.args[5],
-					&result.a0);
+					&result_a0);
 
 	if (desc.nr == SYS_rt_sigreturn) {
 		/* can't handle these syscalls the normal way */
@@ -1069,7 +1021,7 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 			return (struct wrapper_ret){.a0 = UNH_SYSCALL, .a1 = UNH_CLONE};
 #endif
 
-		result = syscall_no_intercept(desc.nr,
+		result_a0 = syscall_no_intercept(desc.nr,
 				desc.args[0],
 				desc.args[1],
 				desc.args[2],
@@ -1104,11 +1056,11 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 					desc.args[3],
 					desc.args[4],
 					desc.args[5],
-					result.a0);
+					result_a0);
 	}
 
 	if (logging_enabled)
-		intercept_log_syscall(patch, &desc, KNOWN, result.a0);
+		intercept_log_syscall(patch, &desc, KNOWN, result_a0);
 
-	return result;
+	return (struct wrapper_ret){.a0 = result_a0, .a1 = a1};
 }

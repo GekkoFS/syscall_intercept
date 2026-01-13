@@ -38,7 +38,7 @@
 #include <string.h>
 #include <syscall.h>
 
-#include "libsyscall_intercept_hook_point.h"
+#include "../include/libsyscall_intercept_hook_point.h"
 
 static int hook(long syscall_number,
 		long arg0, long arg1,
@@ -49,7 +49,7 @@ static int hook(long syscall_number,
 	(void) arg3;
 	(void) arg4;
 	(void) arg5;
-	struct wrapper_ret ret;
+	long ret;
 
 	if (syscall_number == SYS_write) {
 		char buf_copy[0x1000];
@@ -66,7 +66,7 @@ static int hook(long syscall_number,
 				buf_copy[i] = 'I';
 		}
 		ret = syscall_no_intercept(SYS_write, arg0, buf_copy, size);
-		*result = ret.a0;
+		*result = ret;
 		return 0;
 	}
 	return 1;

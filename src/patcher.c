@@ -395,6 +395,9 @@ copy_jump(uint8_t rd, uint8_t rs, int16_t offset)
 
 	instr_size = rvpc_jalr(instr_buff, rd, rs, offset);
 
+	if (instr_size > MAX_PC_INS_SIZE)
+		xabort(__func__, "copy_jump buffer overflow");
+
 	memcpy(cur_asm_relocation_space, instr_buff, instr_size);
 	cur_asm_relocation_space += instr_size;
 }
@@ -402,7 +405,7 @@ copy_jump(uint8_t rd, uint8_t rs, int16_t offset)
 static void
 finalize_and_jump_back(struct patch_desc *patch)
 {
-	uint8_t instrs_buff[MAX_PC_INS_SIZE * 8];
+	uint8_t instrs_buff[MAX_PC_INS_SIZE * 16]; // Increased from 8
 	uint8_t instrs_size = 0;
 	uint8_t ret_reg = patch->return_register;
 
@@ -440,6 +443,9 @@ finalize_and_jump_back(struct patch_desc *patch)
         instrs_size += rv_addi(instrs_buff + instrs_size, REG_SP, REG_SP, 48);
 	    instrs_size += rvpc_jalr(instrs_buff + instrs_size, REG_ZERO, ret_reg, 0);
     }
+
+	if (instrs_size > sizeof(instrs_buff))
+		xabort(__func__, "finalize_and_jump_back buffer overflow");
 
 	memcpy(cur_asm_relocation_space, instrs_buff, instrs_size);
 	cur_asm_relocation_space += instrs_size;
@@ -513,7 +519,7 @@ create_patch(struct intercept_desc *desc)
 		
 		uint8_t length = check_surrounding_instructions(desc, patch);
 		
-		// GPoline Logic:
+		// Hybrid Patch Logic: Determine best patch type based on available space.
         int required_complete = 16;
         #ifndef __riscv_c
         required_complete = 24;
@@ -569,7 +575,7 @@ create_patch(struct intercept_desc *desc)
 static void
 copy_GP_COMPLETE(struct patch_desc *patch, uint8_t *trampoline_addr)
 {
-	uint8_t instrs_buff[32];
+	uint8_t instrs_buff[128]; // Increased to 128
 	volatile uint8_t instrs_size;
     instrs_size = 0; // Explicit set
 	uint8_t *patch_start_addr = patch->dst_jmp_patch;
@@ -618,7 +624,10 @@ copy_GP_COMPLETE(struct patch_desc *patch, uint8_t *trampoline_addr)
 	instrs_size += rvpc_ld(instrs_buff + instrs_size, REG_RA, REG_SP, 0);
 	instrs_size += rvpc_addisp(instrs_buff + instrs_size, 16);
 
-	for(uint8_t i=0; i<instrs_size; ++i) 
+	if (instrs_size > (int)sizeof(instrs_buff))
+		xabort(__func__, "copy_GP_COMPLETE buffer overflow");
+
+	for(uint8_t i=0; i<instrs_size; ++i)
 		patch_start_addr[i] = instrs_buff[i];
         
     // Pad with NOPs
@@ -631,79 +640,7 @@ copy_GP_COMPLETE(struct patch_desc *patch, uint8_t *trampoline_addr)
     }
 }
 
-static void
-copy_GP_FAILSAFE(struct patch_desc *patch)
-{
-	uint8_t instrs_buff[32];
-	uint8_t instrs_size = 0;
-	uint8_t *patch_start_addr = patch->dst_jmp_patch;
 
-	// 1. Allocate Slot and Write Slot Code
-	uint32_t slot_offset = allocate_gpoline_slot();
-	uint8_t *slot_addr = gpoline_table + slot_offset;
-	
-	/*
-	 * Slot Code:
-	 * addi sp, sp, -16
-	 * sd ra, 0(sp)
-	 * jalr ra, 0(gp)       <-- Jump to trampoline. RA points to next instruction (Slot+8)
-	 * ld ra, 0(sp)
-	 * addi sp, sp, 16
-	 * ld t0, 16(slot_base) <-- Load Logical Return Address
-	 * jr t0
-	 */
-	
-	uintptr_t ret_addr = (uintptr_t)patch->return_address;
-	// Update patch->return_address to point to Slot+8 (for detection)
-	// Assuming compact encoding
-#ifdef __riscv_c
-	patch->return_address = (uint8_t*)slot_addr + 6;
-#else
-	// Uncompressed: 4+4+4 = 12.
-	patch->return_address = (uint8_t*)slot_addr + 12;
-#endif
-
-	uint8_t slot_buff[64];
-	uint8_t s_size = 0;
-	s_size += rvpc_addisp(slot_buff + s_size, -16); // 2
-	s_size += rvpc_sd(slot_buff + s_size, REG_RA, REG_SP, 0); // 2
-	
-	s_size += rvpc_jalr(slot_buff + s_size, REG_RA, REG_GP, 0); // 2
-	
-	// Restore logic
-	s_size += rvpc_ld(slot_buff + s_size, REG_RA, REG_SP, 0); // 2
-	s_size += rvpc_addisp(slot_buff + s_size, 16); // 2
-	
-	*(uint64_t*)(slot_addr + 24) = (uint64_t)ret_addr;
-	
-	int32_t ld_offset = (int32_t)slot_offset + 24 - GP_OFFSET;
-	s_size += rvpc_ld(slot_buff + s_size, REG_T0, REG_GP, ld_offset);
-	
-	// jr t0 (c.jr t0)
-	s_size += rvpc_jalr(slot_buff + s_size, REG_ZERO, REG_T0, 0);
-	
-	for(int i=0; i<s_size; ++i) slot_addr[i] = slot_buff[i];
-
-
-	// 2. Write Patch Site Code: jalr zero, slot_offset(gp)
-#ifdef __riscv_c
-	if (patch->start_with_c_nop) {
-		instrs_size += rvc_nop(instrs_buff + instrs_size);
-		patch_start_addr -= RVC_INS_SIZE;
-	}
-#endif
-
-	int32_t jump_offset = (int32_t)slot_offset - GP_OFFSET;
-	instrs_size += rvpc_jalr(instrs_buff + instrs_size, REG_ZERO, REG_GP, jump_offset);
-
-#ifdef __riscv_c
-	if (patch->end_with_c_nop)
-		instrs_size += rvc_nop(instrs_buff + instrs_size);
-#endif
-
-	for(int i=0; i<instrs_size; ++i) 
-		patch_start_addr[i] = instrs_buff[i];
-}
 
 static void
 copy_JAL(struct patch_desc *patch, uint8_t *trampoline_addr)
@@ -711,7 +648,7 @@ copy_JAL(struct patch_desc *patch, uint8_t *trampoline_addr)
     if (patch->patch_size_bytes < 4) xabort(__func__, "Patch size too small for JAL");
 
     int instrs_size = 0;
-    unsigned char instrs_buff[32]; 
+    unsigned char instrs_buff[128]; // Increased to 128
 
     unsigned char *patch_start_addr = patch->dst_jmp_patch;
     
@@ -728,8 +665,10 @@ copy_JAL(struct patch_desc *patch, uint8_t *trampoline_addr)
     // Verify JAL was written (size incremented)
     if (instrs_size == 0) xabort(__func__, "rv_jal failed");
 
-    // Pad with NOPs
-    while (instrs_size < patch->patch_size_bytes) {
+	// Pad with NOPs
+	while (instrs_size < patch->patch_size_bytes) {
+		if (instrs_size + 4 > (int)sizeof(instrs_buff)) break; // Safety
+
          if (patch->patch_size_bytes - instrs_size >= 4) {
              // nop (addi x0, x0, 0)
              uint32_t nop = 0x00000013;
@@ -741,11 +680,14 @@ copy_JAL(struct patch_desc *patch, uint8_t *trampoline_addr)
              *(uint16_t*)(instrs_buff + instrs_size) = cnop;
              instrs_size += 2;
          } else {
-             break; 
+              break; 
          }
     }
 
-    for(int i=0; i<instrs_size; ++i) 
+	if (instrs_size > (int)sizeof(instrs_buff))
+		xabort(__func__, "copy_JAL buffer overflow");
+
+	for(int i=0; i<instrs_size; ++i)
           patch_start_addr[i] = instrs_buff[i];
 }
 
@@ -790,13 +732,13 @@ activate_patches(struct intercept_desc *desc)
 		    patch->dst_jmp_patch > desc->text_end)
 			xabort(__func__, "dst_jmp_patch outside text");
 
-		// Assign global trampoline offset to the patch
-		patch->trampoline_offset = gpoline_trampoline_offset;
+
+        // Progress logging (literal)
+        // syscall_no_intercept(SYS_write, 2, "PATCH\n", 6);
 
         if (patch->syscall_num == TYPE_GP_COMPLETE) {
 			copy_GP_COMPLETE(patch, desc->trampoline_address);
-        } else if (patch->syscall_num == TYPE_GP_FAILSAFE) {
-            copy_GP_FAILSAFE(patch);
+
         } else if (patch->syscall_num == TYPE_JAL) {
             copy_JAL(patch, desc->trampoline_address);
         } else {
@@ -806,6 +748,7 @@ activate_patches(struct intercept_desc *desc)
 	}
 
 	// Restore protections and flush cache
+    syscall_no_intercept(SYS_write, 2, "DEBUG: restoring mprotect\n", 27);
 	mprotect_no_intercept((void *)start_aligned, size_aligned,
 		PROT_READ | PROT_EXEC, "activate_patches done");
 	__builtin___clear_cache((char *)desc->text_start, (char *)desc->text_end);

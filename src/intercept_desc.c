@@ -668,12 +668,12 @@ allocate_trampoline(struct intercept_desc *desc)
         return;
     }
 
-	// With Target-GOT strategy using global init_gpoline,
-	// we do not allocate per-object trampolines for GP_COMPLETE.
-	// We rely on the global trampoline initialized in init_gpoline.
-	desc->uses_trampoline = true;
-	desc->trampoline_address = NULL; // Not used
-	desc->trampoline_offset = 0; // Not used
+	/*
+	 * If trampoline_address is still NULL, it means no local slot was found.
+	 * TYPE_JAL patches will be ignored, but TYPE_GP might still work if
+	 * GP register is somehow valid (though currently mostly unsupported).
+	 */
+	desc->uses_trampoline = (desc->trampoline_address != NULL);
 }
 
 

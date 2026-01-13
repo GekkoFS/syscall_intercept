@@ -508,14 +508,14 @@ detect_cur_patch_wrapper:
 	// place a7 in a callee-saved register to preserve it after the call, important to TYPE_SML
 	mv	s1, a7
 
-	/* The table shows where important values are stored by patch types
-	 *********************************************************************
-	 *      *    return address    * original ra *   a7 (ecall) value    *
-	 *********************************************************************
-	 * GW   *   UNUSED_OFF1(sp)    *    0(sp)    *    a7 (unchanged)     *
-	 * MID  *   ORIG_RA_OFF(sp)    *    8(sp)    *    a7 (unchanged)     *
-	 * SML  *         a7           *    0(sp)    *  patch->syscall_num   *
-	 *********************************************************************/
+	/* The table shows where important values are stored by RISC-V patch types
+	 ************************************************************************
+	 * type*    return address     * original ra * note                     *
+	 ************************************************************************
+	 * JAL *   40(s0) (t0 save)    *   UNUSED(s0)* t0 links the return      *
+	 * GP_C*   ORIG_RA_OFF(s0)     *      0(s0)  * ra links via jalr gp     *
+	 * GP_F*   UNUSED_OFF1(s0)     *      0(s0)  * ra saved manually in GOT *
+	 ************************************************************************/
 
 	// a0 will hold TYPE_MID ret addr
 	ld	a0, ORIG_RA_OFF(s0)

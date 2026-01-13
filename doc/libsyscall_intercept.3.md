@@ -90,17 +90,10 @@ INTERCEPT\_ALL\_OBJS below). In order to be able to issue
 syscalls that are not intercepted, a convenience function
 is provided by the library:
 ```c
-struct wrapper_ret syscall_no_intercept(long syscall_number, ...);
+long syscall_no_intercept(long syscall_number, ...);
 ```
-The struct `wrapper_ret` is part of the RISC-V version of this library's API:
-```c
-struct wrapper_ret {
-    int64_t a0;
-    int64_t a1;
-}
-```
-If A1 is modified by a syscall, this struct will preserve both
-return values (A0 and A1).
+
+The return value is the result of the system call (value of A0 register).
 
 In addition to hooking syscalls before they would be called, the API
 has two special hook points that are executed after thread creation,
@@ -122,9 +115,9 @@ int syscall_error_code(long result);
 When passed a return value from syscall\_no\_intercept, this function
 can translate it to an error code equivalent to a glibc error code:
 ```c
-struct wrapper_ret ret;
+long ret;
 ret = syscall_no_intercept(SYS_open, "file", O_RDWR);
-int fd = (int)ret.a0;
+int fd = (int)ret;
 if (syscall_error_code(fd) != 0)
 	fprintf(stderr, strerror(syscall_error_code(fd)));
 ```

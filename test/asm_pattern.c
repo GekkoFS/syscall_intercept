@@ -172,7 +172,7 @@ main(int argc, char **argv)
 	if (argc < 3)
 		return EXIT_FAILURE;
 
-	debug_dumps_on = getenv("INTERCEPT_DEBUG_DUMP") != NULL;
+	// debug_dumps_on = getenv("INTERCEPT_DEBUG_DUMP") != NULL;
 
 	/* first load both libraries */
 	struct lib_data lib_in = load_test_lib(argv[1]);
