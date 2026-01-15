@@ -48,12 +48,40 @@
 #include <stdbool.h>
 #include <elf.h>
 #include <dlfcn.h>
+#include <unistd.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <unistd.h>
+#include <limits.h>
 #include <link.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <syscall.h>
+#include <sys/mman.h>
+#include <stdarg.h>
+#include <sys/auxv.h>
+#include <linux/sched.h>
+
+#include "intercept.h"
+#include "intercept_log.h"
+#include "intercept_util.h"
+#include "../include/libsyscall_intercept_hook_point.h"
+#include "disasm_wrapper.h"
+#include "magic_syscalls.h"
+
+extern void asm_entry_point(void);
+
+// ... existing unhandled syscalls ...
+
+static struct intercept_desc *objs = NULL;
+static size_t objs_count = 0;
+static size_t objs_capacity = 0; // Restored
+// static char static_objs[...] // Removed
+
+/*
+ * allocate_next_obj_desc - allocates a new object descriptor
+ */
 #include <string.h>
 #include <syscall.h>
 #include <sys/mman.h>
@@ -92,6 +120,7 @@ extern void asm_entry_point(void);
  */
 #define UNH_SYSCALL	((int64_t)-0x1000)
 #define UNH_GENERIC	((int64_t)-0x1001)
+#define UNH_CLONE	((int64_t)-0x1002)
 #define UNH_CLONE	((int64_t)-0x1002)
 
 int (*intercept_hook_point)(long syscall_number,
@@ -157,8 +186,6 @@ static bool patch_all_objs;
  * array of structs.
  * The number currently allocated is in the objs_count variable.
  */
-static struct intercept_desc *objs;
-static unsigned objs_count;
 
 /* was libc found while looking for loaded objects? */
 static bool libc_found;
@@ -174,16 +201,24 @@ static void *vdso_addr;
 static struct intercept_desc *
 allocate_next_obj_desc(void)
 {
-	if (objs_count == 0)
-		objs = xmmap_anon(sizeof(objs[0]));
-	else
-		objs = xmremap(objs, objs_count * sizeof(objs[0]),
-			(objs_count + 1) * sizeof(objs[0]));
+	struct intercept_desc *new_desc;
+
+	if (objs != NULL) {
+		if (objs_count == objs_capacity) {
+			new_desc = xmremap(objs,
+			    objs_capacity * sizeof(struct intercept_desc),
+			    objs_capacity * 2 *
+			    sizeof(struct intercept_desc));
+			objs_capacity *= 2;
+			objs = new_desc;
+		}
+	} else {
+		objs = xmmap_anon(sizeof(struct intercept_desc));
+		objs_capacity = 1;
+	}
 
 	++objs_count;
-    struct intercept_desc *new_desc = objs + objs_count - 1;
-    // Address dump manually
-    // ...
+	new_desc = objs + objs_count - 1;
 	return new_desc;
 }
 
@@ -250,11 +285,6 @@ get_name_from_proc_maps(uintptr_t addr)
 		    (void **)&start, (void **)&end, next_path) != 3)
 			continue;
         
-        // Debug logging
-        char debug_buf[256];
-        int debug_len = snprintf(debug_buf, sizeof(debug_buf), "Map: %s %p-%p vs %p\n", next_path, start, end, (void *)addr);
-        syscall_no_intercept(SYS_write, 2, debug_buf, debug_len);
-
 		if (addr < (uintptr_t)start)
 			break;
 
@@ -473,8 +503,10 @@ alloc_trampoline_in_object(struct intercept_desc *desc, struct dl_phdr_info *inf
                     // sd ra, 0(sp)
                     size += rv_sd(buff + size, REG_RA, REG_SP, 0);
                     
-                    // sd t0, 40(sp)
-                    size += rv_sd(buff + size, REG_T0, REG_SP, 40);
+                    // sd t0, 32(sp) (UNUSED_OFF1)
+                    size += rv_sd(buff + size, REG_T0, REG_SP, 32);
+                    // sd t0, 16(sp) (RET_ADDR_OFF) - Required for intercept_routine logic
+                    size += rv_sd(buff + size, REG_T0, REG_SP, 16);
                     
                     // jump to asm_entry_point
                     // using t1 (6) as scratch
@@ -525,26 +557,33 @@ analyze_object(struct dl_phdr_info *info, size_t size, void *data)
 	const char *path;
     struct intercept_desc *desc;
 
-	debug_dump("analyze_object called on \"%s\" at 0x%016" PRIxPTR "\n",
-	    info->dlpi_name, info->dlpi_addr);
-
-	if ((path = get_object_path(info)) == NULL)
+	if ((path = get_object_path(info)) == NULL) { 
+		/*
+		 * It can happen that we can't find the object path
+		 * for a mapping. For example, the restricted area
+		section of the vdso. In this case, we just skip it.
+		 */
 		return 0;
+	} else {
+    }
 
-	debug_dump("analyze %s\n", path);
-
-	if (!should_patch_object(info->dlpi_addr, path))
-		return 0;
-
-	desc = allocate_next_obj_desc();
-
+	desc = allocate_next_obj_desc(); 
 	desc->base_addr = (unsigned char *)info->dlpi_addr;
-	desc->path = path;
+	desc->path = strdup(path);
 
-	find_syscalls(desc);
+	if (should_patch_object(info->dlpi_addr, desc->path)) {
+        debug_dump("Patching object: %s\n", desc->path);
+		find_syscalls(desc);
+        alloc_trampoline_in_object(desc, info);
+        create_patch(desc);
+        if (desc->count > 0)
+            activate_patches(desc);
+	} else {
+        debug_dump("Skipping object: %s\n", desc->path);
+		desc->count = 0;
+	}
 
-    alloc_trampoline_in_object(desc, info);
-
+    debug_dump("analyze_object finished on %s \n", desc->path);
 	return 0;
 }
 
@@ -608,26 +647,48 @@ static __attribute__((constructor)) void
 intercept(int argc, char **argv)
 {
 	(void) argc;
+    cmdline = argv[0];
+    static bool init_done = false;
 	char *path = NULL;
-	cmdline = argv[0];
+	extern void init_patcher(long page_size);
 	extern void init_tls_offset_table(void);
 
+	/*
+	 * This is the constructor invocation -- the very first time
+	 * libsyscall_intercept code runs.
+	 * Here we must inspect every library that is already loaded, and
+	 * patch them.
+	 */
 
-
-	if (!syscall_hook_in_process_allowed())
+	if (init_done)
 		return;
+
+	init_done = true;
+
+	long page_size = sysconf(_SC_PAGESIZE);
+	if (page_size <= 0)
+		page_size = 4096;
+
+	extern void init_patcher(long page_size);
+	init_patcher(page_size);
 
 	vdso_addr = (void *)(uintptr_t)getauxval(AT_SYSINFO_EHDR);
 	patch_all_objs = (getenv("INTERCEPT_ALL_OBJS") != NULL);
 	path = getenv("INTERCEPT_LOG");
+
 	logging_enabled = (path != NULL && path[0] != '\0');
 	if (logging_enabled) {
 		intercept_setup_log(path, getenv("INTERCEPT_LOG_TRUNC"));
 	}
 
+	if (!syscall_hook_in_process_allowed()) {
+		return;
+    }
+
 	dl_iterate_phdr(analyze_object, NULL);
+
 	if (!libc_found)
-		xabort(__func__, "libc not found");
+		xabort("intercept", "libc not found");
 
 	init_tls_offset_table();
 	write_enable_asm_relocation_space(true);
@@ -640,15 +701,28 @@ intercept(int argc, char **argv)
 		create_patch(objs + i);
 
         // Sort patches by return_address for binary_search
-        qsort(objs[i].items, objs[i].count, sizeof(struct patch_desc), compare_patches);
+        qsort(
+            objs[i].items,
+            objs[i].count,
+            sizeof(struct patch_desc),
+            compare_patches
+        );
 	}
 
-	write_enable_asm_relocation_space(false);
-
-	for (unsigned i = 0; i < objs_count; ++i) {
+	for (uint32_t i = 0; i < objs_count; ++i) {
 		activate_patches(objs + i);
     }
 }
+
+
+/*
+ * xabort_errno - print a message to stderr, and exit the process.
+ * Calling abort() in libc might result other syscalls being called
+ * by libc.
+ *
+ * If error_code is not zero, it is also printed.
+ */
+
 
 
 /*
@@ -770,10 +844,21 @@ binary_search(const struct patch_desc *items, uint32_t count, uint64_t ret_addr)
  */
 
 
+static int64_t
+binary_search_fuzzy(const struct patch_desc *items, uint32_t count, uint64_t ret_addr);
+
 __attribute__((section(".text.irqentry"), used)) struct wrapper_ret
 detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_addr, uint64_t JAL_ret_addr)
 {
-	const uint64_t check_ret_addrs[4] = {MID_ret_addr, SML_ret_addr, GW_ret_addr, JAL_ret_addr};
+    syscall_no_intercept(SYS_write, 2, "DEBUG: JAL_addr=", 16);
+    for (int i = 15; i >= 0; --i) {
+        int nibble = (JAL_ret_addr >> (i * 4)) & 0xF;
+        char c = (nibble < 10) ? ('0' + nibble) : ('a' + nibble - 10);
+        syscall_no_intercept(SYS_write, 2, &c, 1);
+    }
+    syscall_no_intercept(SYS_write, 2, "\n", 1);
+    
+    const uint64_t check_ret_addrs[4] = {MID_ret_addr, SML_ret_addr, GW_ret_addr, JAL_ret_addr};
 
 	for (uint8_t ra_idx = 0; ra_idx < (sizeof(check_ret_addrs) / sizeof(check_ret_addrs[0])); ++ra_idx) {
 		uint64_t ra = check_ret_addrs[ra_idx];
@@ -782,7 +867,7 @@ detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_a
 			if (ra < (uint64_t)objs[o].text_start || ra > (uint64_t)objs[o].text_end)
 				continue;
 
-			int64_t match_idx = binary_search(objs[o].items, objs[o].count, ra);
+			int64_t match_idx = binary_search_fuzzy(objs[o].items, objs[o].count, ra);
 			if (match_idx >= 0) {
 				const struct patch_desc *patch = objs[o].items + match_idx;
 				int64_t sn = (int64_t)patch->syscall_num;
@@ -830,8 +915,9 @@ binary_search_fuzzy(const struct patch_desc *items, uint32_t count, uint64_t ret
         
 		if (addr == ret_addr)
 			return mid;
-        // Check fuzzy
-        if (ret_addr >= addr && ret_addr <= addr + 2) 
+        // Check fuzzy (handle +/- 2 bytes for instruction alignment differences)
+        int64_t diff = (int64_t)ret_addr - (int64_t)addr;
+        if (diff >= -2 && diff <= 2) 
             return mid;
 
 		if (addr < ret_addr)
@@ -960,7 +1046,14 @@ __attribute__((section(".text.irqentry"))) struct wrapper_ret
 intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
 {
-	long result_a0 = a0;
+	/*
+	 * SAFEGUARD: RISC-V implementations of intercept_hook_point might expect
+	 * to write a struct wrapper_ret (a0, a1) instead of just long (a0),
+	 * even if the signature says long*. We provide enough space to avoid
+	 * stack smashing.
+	 */
+	struct wrapper_ret result_safe = {.a0 = a0, .a1 = a1};
+	long *result_ptr = &result_safe.a0;
 	int forward_to_kernel = true;
 	const struct patch_desc *patch = get_cur_patch(a6);
 	/*
@@ -979,8 +1072,8 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 	};
 
 #ifndef SYSCALL_INTERCEPT_WITHOUT_MAGIC_SYSCALLS
-	if (handle_magic_syscalls(&desc, &result_a0) == 0)
-		return (struct wrapper_ret){.a0 = result_a0, .a1 = a1};
+	if (handle_magic_syscalls(&desc, result_ptr) == 0)
+		return (struct wrapper_ret){.a0 = result_safe.a0, .a1 = a1};
 #endif
 
 	if (logging_enabled)
@@ -988,13 +1081,13 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 
 	if (intercept_hook_point != NULL)
 		forward_to_kernel = intercept_hook_point(desc.nr,
-					desc.args[0],
-					desc.args[1],
-					desc.args[2],
-					desc.args[3],
-					desc.args[4],
-					desc.args[5],
-					&result_a0);
+				desc.args[0],
+				desc.args[1],
+				desc.args[2],
+				desc.args[3],
+				desc.args[4],
+				desc.args[5],
+				result_ptr);
 
 	if (desc.nr == SYS_rt_sigreturn) {
 		/* can't handle these syscalls the normal way */
@@ -1021,7 +1114,7 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 			return (struct wrapper_ret){.a0 = UNH_SYSCALL, .a1 = UNH_CLONE};
 #endif
 
-		result_a0 = syscall_no_intercept(desc.nr,
+		result_safe.a0 = syscall_no_intercept(desc.nr,
 				desc.args[0],
 				desc.args[1],
 				desc.args[2],
@@ -1056,11 +1149,11 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 					desc.args[3],
 					desc.args[4],
 					desc.args[5],
-					result_a0);
+					result_safe.a0);
 	}
 
 	if (logging_enabled)
-		intercept_log_syscall(patch, &desc, KNOWN, result_a0);
+		intercept_log_syscall(patch, &desc, KNOWN, result_safe.a0);
 
-	return (struct wrapper_ret){.a0 = result_a0, .a1 = a1};
+	return (struct wrapper_ret){.a0 = result_safe.a0, .a1 = a1};
 }

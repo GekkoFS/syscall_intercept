@@ -59,8 +59,7 @@ static int32_t *sys_filter_ptr = NULL;
  * For simplicity, declare syscall_no_intercept() with return value 'long'
  * because nothing in this TU needs the a1 register, only a0 is checked.
  */
-extern long
-syscall_no_intercept(long syscall_number, ...);
+extern long syscall_no_intercept(long syscall_number, ...);
 
 /*
  * open_orig_file
@@ -85,6 +84,8 @@ open_orig_file(const struct intercept_desc *desc)
 
 	return fd;
 }
+
+
 
 static void
 add_table_info(struct section_list *list, const Elf64_Shdr *header)
@@ -145,8 +146,12 @@ find_sections(struct intercept_desc *desc, int fd)
 		const Elf64_Shdr *section = &sec_headers[i];
 		char *name = sec_string_table + section->sh_name;
 
-		debug_dump("looking at section: \"%s\" type: %ld\n",
-		    name, (long)section->sh_type);
+        /* Debug Loop */
+        // syscall_no_intercept(SYS_write, 2, "DEBUG: sect: ", 13, 0, 0, 0);
+        // int len=0; while(name[len]) len++;
+        // syscall_no_intercept(SYS_write, 2, name, len, 0, 0, 0);
+        // syscall_no_intercept(SYS_write, 2, "\n", 1, 0, 0, 0);
+
 		if (strcmp(name, ".text") == 0) {
 			text_section_found = true;
 			add_text_info(desc, section, i);
@@ -689,7 +694,6 @@ allocate_trampoline(struct intercept_desc *desc)
 void
 find_syscalls(struct intercept_desc *desc)
 {
-    syscall_no_intercept(SYS_write, 2, "Entering find_syscalls\n", 23);
 	debug_dump("find_syscalls in %s "
 	    "at base_addr 0x%016" PRIxPTR "\n",
 	    desc->path,
@@ -708,7 +712,6 @@ find_syscalls(struct intercept_desc *desc)
 	allocate_jump_table(desc);
 
 	for (Elf64_Half i = 0; i < desc->symbol_tables.count; ++i) {
-        syscall_no_intercept(SYS_write, 2, "Scanning symbol table...\n", 25);
 		find_jumps_in_section_syms(desc,
 		    desc->symbol_tables.headers + i, fd);
     }

@@ -34,8 +34,38 @@
  * intercept_irq_entry.S -- see doc/RV_doc.md
  */
 
-// offsets (constants) common to both patcher.c and this TU
 #include "patch_offsets.h"
+
+    .macro DEBUG_CHAR char
+        addi sp, sp, -16
+        sd a0, 0(sp)
+        sd a7, 8(sp)
+        li a0, \char
+        sd a0, 16(sp) // store char on stack (out of bounds safeish? no need to alloc buffer)
+        // Wait, 16(sp) is caller frame? create space.
+        
+        li a0, 2 // stderr
+        addi a1, sp, 16 // address of char
+        li a2, 1 // len
+        li a7, 64 // SYS_write
+        ecall
+        
+        ld a0, 0(sp)
+        ld a7, 8(sp)
+        addi sp, sp, 16
+    .endm
+    
+    // Better debug macro that calls a function
+    .macro CALL_DEBUG_MARKER id
+        addi sp, sp, -16
+        sd ra, 8(sp)
+        sd a0, 0(sp)
+        li a0, \id
+        call debug_marker
+        ld a0, 0(sp)
+        ld ra, 8(sp)
+        addi sp, sp, 16
+    .endm
 
 	/* Constants */
 	// relocation space size, increase it if needed
@@ -523,8 +553,8 @@ detect_cur_patch_wrapper:
 	mv	a1, a7
 	// a2 will hold TYPE_GW ret addr
 	ld	a2, UNUSED_OFF1(s0)
-    // a3 will hold TYPE_JAL ret addr (t0 saved at offset 40 from sp in trampoline)
-    ld  a3, 40(s0)
+    // a3 will hold TYPE_JAL ret addr (now ra saved at UNUSED_OFF1 due to patcher fix)
+    ld  a3, UNUSED_OFF1(s0)
 
 	call	detect_cur_patch
 	/*
@@ -553,8 +583,8 @@ detect_cur_patch_wrapper:
     ld a0, UNUSED_OFF1(s0)
     sd a0, 0(s0)
     
-    // Set RET_ADDR_OFF to t0 (JAL return addr), which is the key for get_cur_patch
-    ld a0, 40(s0)
+    // Set RET_ADDR_OFF to ra (JAL return addr), which is the key for get_cur_patch
+    ld a0, UNUSED_OFF1(s0)
     sd a0, RET_ADDR_OFF(s0)
     j .Ldone
 
@@ -716,6 +746,7 @@ intercept_routine_wrapper:
 
 
 asm_relocation_space:
+    .align 3
 	.space	RELOCATION_SIZE, 0
 	.size	asm_relocation_space, . - asm_relocation_space
 
@@ -726,7 +757,124 @@ asm_relocation_space:
 	.hidden	asm_relocation_space_size
 asm_relocation_space_size:
 	.8byte	RELOCATION_SIZE
-	/*
+
+    .align 2
+    .global debug_marker
+    .type debug_marker, @function
+debug_marker:
+    // a0 holds ID.
+    // Save volatile regs: a0-a7, t0-t6, ra
+    addi sp, sp, -128
+    sd ra, 0(sp)
+    sd a0, 8(sp)
+    sd a1, 16(sp)
+    sd a2, 24(sp)
+    sd a7, 32(sp)
+    
+    // Print "MK: "
+    li a0, 0x203A4B4D // "MK: " (little endian: M(4D) K(4B) :(3A)  (20)) -> 4D 4B 3A 20 wrong order?
+    // "MK: " -> 'M'(0x4d) 'K'(0x4b) ':'(0x3a) ' '(0x20)
+    // Little endian: 0x203A4B4D
+    sd a0, 40(sp)
+    
+    li a0, 2
+    addi a1, sp, 40
+    li a2, 4
+    li a7, 64
+    ecall
+    
+    // Print ID (a0 saved at 8(sp))
+    ld t0, 8(sp) 
+    addi t0, t0, 48 // '0'
+    sd t0, 40(sp)
+    
+    li a0, 2
+    addi a1, sp, 40
+    li a2, 1
+    li a7, 64
+    ecall
+    
+    // Newline
+    li t0, 10
+    sd t0, 40(sp)
+    
+    li a0, 2
+    addi a1, sp, 40
+    li a2, 1
+    li a7, 64
+    ecall
+    
+    // Restore
+    ld ra, 0(sp)
+    ld a0, 8(sp)
+    ld a1, 16(sp)
+    ld a2, 24(sp)
+    ld a7, 32(sp)
+    addi sp, sp, 128
+    .align 2
+    .global debug_val_printer
+    .type debug_val_printer, @function
+debug_val_printer:
+    // a0 is value. print hex.
+    addi sp, sp, -32
+    sd ra, 0(sp)
+    sd s0, 8(sp)
+    
+    mv s0, a0
+    
+    // Print prefix " V:"
+    li a0, 2
+    addi sp, sp, -8
+    li t0, 0x3A5620 // " V:"
+    sd t0, 0(sp)
+    addi a1, sp, 0
+    li a2, 3
+    li a7, 64
+    ecall
+    addi sp, sp, 8
+    
+    // Loop 16 nibbles
+    li t0, 16
+1:
+    addi t0, t0, -1
+    srl t1, s0, 60 // top 4 bits
+    slli s0, s0, 4 // shift
+    
+    li t2, 9
+    ble t1, t2, 2f
+    addi t1, t1, 7 // A-F
+2:
+    addi t1, t1, 48 // 0-9
+    
+    // print char
+    addi sp, sp, -8
+    sd t1, 0(sp)
+    li a0, 2
+    addi a1, sp, 0
+    li a2, 1
+    li a7, 64
+    ecall
+    addi sp, sp, 8
+    
+    bnez t0, 1b
+    
+    // newline
+    addi sp, sp, -8
+    li t1, 10
+    sd t1, 0(sp)
+    li a0, 2
+    addi a1, sp, 0
+    li a2, 1
+    li a7, 64
+    ecall
+    addi sp, sp, 8
+    
+    ld ra, 0(sp)
+    ld s0, 8(sp)
+    addi sp, sp, 32
+    ret
+    .size debug_val_printer, . - debug_val_printer
+    /*
 	 * Natural alignment (alignment follows the symbol size) is crucial for
 	 * atomic instructions. Misalignment causes the address-misaligned or
 	 * access-fault exception. Also, misaligned LR/SC sequences also raise

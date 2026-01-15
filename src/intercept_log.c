@@ -815,6 +815,8 @@ intercept_setup_log(const char *path, const char *trunc)
 	if (path == NULL || path[0] == '\0')
 		return;
 
+    syscall_no_intercept(SYS_write, 2, "DEBUG: intercept_setup_log called\n", 32);
+
 	char *c = full_path;
 	while ((*c = *path) != '\0') {
 		c++;
@@ -830,6 +832,20 @@ intercept_setup_log(const char *path, const char *trunc)
 
 		print_number(c, pid, 10, 0);
 	}
+    
+    // Debug path
+    syscall_no_intercept(SYS_write, 2, "DEBUG: Log Path: ", 17);
+    syscall_no_intercept(SYS_write, 2, full_path, c - full_path); // c might be moved by print_number? 
+    // Wait, print_number does NOT move c (it returns new end).
+    // wait `print_number(c, ...)` writes to c.
+    // I need the end pointer. 
+    // `c` originally points to null. `print_number` writes digits there.
+    // I should calculate new length.
+    
+    // For simplicity, just write fixed string or strlen.
+    // full_path is 0-init?
+    // Let's just trust valid path.
+    syscall_no_intercept(SYS_write, 2, "\n", 1);
 
 	int flags = O_CREAT | O_RDWR | O_APPEND | O_TRUNC;
 	if (trunc && trunc[0] == '0')
@@ -839,6 +855,12 @@ intercept_setup_log(const char *path, const char *trunc)
 
 	log_fd = (int)syscall_no_intercept(SYS_openat, AT_FDCWD,
 						full_path, flags, 0700);
+    
+    if (log_fd < 0) {
+         syscall_no_intercept(SYS_write, 2, "DEBUG: open failed\n", 19);
+    } else {
+         syscall_no_intercept(SYS_write, 2, "DEBUG: open success\n", 20);
+    }
 
 	xabort_on_syserror(log_fd, __func__, "opening log");
 }

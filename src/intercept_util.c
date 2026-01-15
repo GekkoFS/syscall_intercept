@@ -48,15 +48,50 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <sys/syscall.h>
 #include <stdarg.h>
 #include <sched.h>
-#include <linux/limits.h>
-#include "../include/libsyscall_intercept_hook_point.h"
+/*
+ * syscall_no_intercept declaration (implemented in util.S)
+ */
+long syscall_no_intercept(long syscall_number, ...);
+long raw_syscall(long nr, ...);
+
+/*
+ * syscall_no_intercept wrapper using raw_syscall (ASM)
+ */
+long
+syscall_no_intercept(long nr, ...)
+{
+    long a0, a1, a2, a3, a4, a5;
+    va_list ap;
+    va_start(ap, nr);
+    a0 = va_arg(ap, long);
+    a1 = va_arg(ap, long);
+    a2 = va_arg(ap, long);
+    a3 = va_arg(ap, long);
+    a4 = va_arg(ap, long);
+    a5 = va_arg(ap, long);
+    va_end(ap);
+
+    return raw_syscall(nr, a0, a1, a2, a3, a4, a5);
+}
+
+long
+syscall_error_code(long result)
+{
+	if (result < 0 && result >= -0x1000)
+		return -result;
+	return 0;
+}
+
+long raw_syscall(long nr, ...);
 
 void
 mprotect_no_intercept(void *addr, size_t len, int prot, const char *msg)
 {
-	long ret = syscall_no_intercept(SYS_mprotect, addr, len, prot);
+	long ret = raw_syscall(SYS_mprotect, addr, len, prot);
 	if (ret != 0)
 		xabort_errno((int)ret, msg, "mprotect failed");
 }
@@ -69,7 +104,7 @@ xmmap_anon(size_t size)
 	addr = syscall_no_intercept(SYS_mmap,
 					NULL, size,
 					PROT_READ | PROT_WRITE,
-					MAP_PRIVATE | MAP_ANON, -1, (off_t)0);
+					MAP_PRIVATE | MAP_ANON, -1, 0);
 
 	xabort_on_syserror(addr, __func__, NULL);
 
@@ -111,15 +146,69 @@ xlseek(long fd, unsigned long off, int whence)
 	return result;
 }
 
+static void __attribute__((unused))
+print_hex_local(uintptr_t val)
+{
+	char buf[18];
+	char *ptr = buf + 16;
+	*ptr = '\0';
+    *--ptr = '\n';
+	do {
+		int d = val % 16;
+		*--ptr = (d < 10) ? (d + '0') : (d - 10 + 'a');
+		val /= 16;
+	} while (val != 0 && ptr > buf);
+	syscall_no_intercept(SYS_write, 2, ptr, buf + 17 - ptr, 0, 0, 0);
+}
+
 void
 xread(long fd, void *buffer, size_t size)
 {
 	long result;
+    size_t total_read = 0;
+    char *buf_ptr = (char *)buffer;
 
-	result = syscall_no_intercept(SYS_read, fd, buffer, size);
+    while (total_read < size) {
+	    result = syscall_no_intercept(SYS_read, fd, buf_ptr + total_read, size - total_read);
+        
+        if (result < 0) {
+             xabort_errno(syscall_error_code(result), __func__, NULL);
+             return; // Unreachable
+        }
+        if (result == 0) {
+             if (total_read != size) {
+                  xabort_errno(0, __func__, "Short read (EOF)");
+             }
+             break;
+        }
+        
+        total_read += result;
+    }
+}
 
-	if (result != (long)size)
-		xabort_errno(syscall_error_code(result), __func__, NULL);
+void
+xwrite(long fd, const void *buffer, size_t size)
+{
+	long result;
+    size_t total_written = 0;
+    const char *buf_ptr = (const char *)buffer;
+
+    while (total_written < size) {
+	    result = syscall_no_intercept(SYS_write, fd, buf_ptr + total_written, size - total_written);
+        
+        if (result < 0) {
+             xabort_errno(syscall_error_code(result), __func__, NULL);
+             return; // Unreachable
+        }
+        // A write of 0 bytes is possible if size - total_written was 0,
+        // or if the kernel decided to write 0 bytes (e.g., due to resource limits).
+        // If result is 0 and total_written < size, it indicates an issue.
+        if (result == 0 && total_written < size) {
+             xabort_errno(0, __func__, "Short write (0 bytes written)");
+        }
+        
+        total_written += result;
+    }
 }
 
 /* BEGIN CSTYLED */

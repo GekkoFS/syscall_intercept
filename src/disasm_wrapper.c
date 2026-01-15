@@ -139,6 +139,7 @@ intercept_disasm_init(const unsigned char *begin, const unsigned char *end)
 	if ((context->insn = cs_malloc(context->handle)) == NULL)
 		xabort(__func__, "cs_malloc");
 
+
 	return context;
 }
 
@@ -276,14 +277,9 @@ intercept_disasm_next_instruction(struct intercept_disasm_context *context,
 	    &address, context->insn)) {
 		return result;
 	}
-    // Debug logging
-    // static int log_count = 0;
-    // if (log_count < 20) {
-    //    log_count++;
-    //    char msg[128];
-    //    // Cannot safely snprintf effectively here without pulling dependencies, 
-    //    // but let depends on if we can match ecall
-    // }
+    
+    // Debug logging removed.
+
     if (context->insn->id == RISCV_INS_ECALL) {
          // syscall_no_intercept(SYS_write, 2, "DISASM: FOUND ECALL\n", 20);
     }
@@ -303,6 +299,7 @@ intercept_disasm_next_instruction(struct intercept_disasm_context *context,
 	 * For now just skip it unless it becomes needed in the future...
 	 */
 	result.has_ip_relative_opr = (context->insn->id == RISCV_INS_AUIPC);
+    result.is_auipc = (context->insn->id == RISCV_INS_AUIPC);
 	result.is_syscall = (context->insn->id == RISCV_INS_ECALL);
 
 #ifndef NDEBUG
