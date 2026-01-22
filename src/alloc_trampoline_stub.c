@@ -108,5 +108,4 @@ alloc_trampoline_in_object(struct intercept_desc *desc, struct dl_phdr_info *inf
         }
     }
     
-    syscall_no_intercept(SYS_write, 2, "DEBUG: FAILED to find trampoline slot in object\n", 48);
 }

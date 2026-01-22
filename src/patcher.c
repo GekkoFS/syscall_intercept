@@ -53,8 +53,7 @@
 
 #include <stdio.h>
 
-long syscall_no_intercept(long number, ...);
-long raw_syscall(long number, ...);
+
 
 #ifndef SYS_riscv_flush_icache
 #define SYS_riscv_flush_icache 259
@@ -207,6 +206,9 @@ check_two_ecalls(struct patch_desc *patch, uint8_t syscall_idx,
     return syscall_idx + 1;
 }
 
+
+
+
 /*
  * check_surrounding_instructions
  * Sets up the following members in a patch_desc, based on
@@ -225,6 +227,10 @@ check_surrounding_instructions(struct intercept_desc *desc,
 	uint8_t patchable_size = 0;
 
 	// check if the instruction after the ecall sets a register
+    if (instrs == NULL) {
+        return 0; // Skip patching this item
+    }
+    
 	if (instrs[syscall_idx + 1].reg_set)
 		patch->return_register = instrs[syscall_idx + 1].reg_set;
 
@@ -616,13 +622,14 @@ create_patch(struct intercept_desc *desc)
 			patch->return_address = ecall_end;
         } else if (length >= 4) {
              // Check distance
-             if (desc->trampoline_address) {
-                 int64_t diff = (int64_t)((unsigned char*)desc->trampoline_address - (unsigned char*)patch->syscall_addr);
+             if (desc->trampoline_jal_address) {
+                 int64_t diff = (int64_t)((unsigned char*)desc->trampoline_jal_address - (unsigned char*)patch->syscall_addr);
                  
                  if (diff >= -0x100000 && diff <= 0xFFFFF) {
                       patch->syscall_num = TYPE_JAL;
                       patch->patch_size_bytes = 4;
                       patch->return_address = (uint8_t*)patch->syscall_addr + 4;
+                      patch->return_register = REG_T0;
                  } else {
                       patch->syscall_num = TYPE_IGNORE;
                  }
@@ -634,6 +641,15 @@ create_patch(struct intercept_desc *desc)
 		}
 
 		position_patch(patch);
+
+        // Fix return_address for TYPE_GP_COMPLETE.
+        // copy_GP_COMPLETE emits auipc (4) + jalr (4).
+        // jalr sets ra to PC+4. So ra = dst_jmp_patch + 4 + 4 = dst + 8.
+        // We must update return_address to match this runtime value,
+        // especially if position_patch moved dst_jmp_patch.
+        if (patch->syscall_num == TYPE_GP_COMPLETE) {
+            patch->return_address = patch->dst_jmp_patch + 8;
+        }
 
         if (patch->syscall_num != TYPE_IGNORE) {
             // Mark Jump
@@ -728,6 +744,8 @@ copy_GP_COMPLETE(struct patch_desc *patch, uint8_t *trampoline_addr)
 static void
 copy_JAL(struct patch_desc *patch, uint8_t *trampoline_addr)
 {
+    // Ensure we are using JAL trampoline
+    // trampoline_addr passed here should be desc->trampoline_jal_address
     if (patch->patch_size_bytes < 4) xabort(__func__, "Patch size too small for JAL");
 
     int instrs_size = 0;
@@ -806,11 +824,13 @@ activate_patches(struct intercept_desc *desc)
         if (patch->dst_jmp_patch < desc->text_start || patch->dst_jmp_patch >= desc->text_end) {
              xabort("activate_patches", "Patch out of bounds");
         }
+        
 
-             if (patch->syscall_num == TYPE_GP_COMPLETE) {
+
+	     if (patch->syscall_num == TYPE_GP_COMPLETE) {
 			copy_GP_COMPLETE(patch, desc->trampoline_address);
-        } else if (patch->syscall_num == TYPE_JAL) {
-            copy_JAL(patch, desc->trampoline_address);
+         } else if (patch->syscall_num == TYPE_JAL) {
+            copy_JAL(patch, desc->trampoline_jal_address);
         } else {
              xabort("activate_patches", "Unknown patch type");
         }
@@ -821,10 +841,10 @@ activate_patches(struct intercept_desc *desc)
 			PROT_READ | PROT_EXEC, "activate_patches done");
     
     // flush instructions cache for the modified text segment
-    raw_syscall(SYS_riscv_flush_icache, start_aligned, end_raw, 0);
-    
-    // flush instructions cache for the relocation buffer
-    raw_syscall(SYS_riscv_flush_icache, asm_relocation_space, cur_asm_relocation_space, 0);
+    syscall_no_intercept(SYS_riscv_flush_icache, (long)start_aligned, (long)end_raw, 0, 0, 0, 0);
+
+    // Also flush the assembly relocation space where trampolines live
+    syscall_no_intercept(SYS_riscv_flush_icache, (long)asm_relocation_space, (long)cur_asm_relocation_space, 0, 0, 0, 0);
 }
 
 void

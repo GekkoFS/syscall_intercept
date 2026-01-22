@@ -53,7 +53,7 @@ struct wrapper_ret {
     long a1;
 };
 
-long syscall_no_intercept(long syscall_number, ...);
+
 
 struct intercept_disasm_context {
 	csh handle;
@@ -303,8 +303,7 @@ intercept_disasm_next_instruction(struct intercept_disasm_context *context,
 	result.is_syscall = (context->insn->id == RISCV_INS_ECALL);
 
 #ifndef NDEBUG
-	strncpy(result.mnemonic, context->insn->mnemonic,
-		sizeof(result.mnemonic) - 1);
+	// Mnemonic removed
 #endif
 	uint8_t grp_count = context->insn->detail->groups_count;
 	for (uint8_t i = 0; i < grp_count; ++i) {

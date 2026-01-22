@@ -43,7 +43,7 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-#define DEBUG 0
+// #define DEBUG 1
 #include <assert.h>
 #include <stdbool.h>
 #include <elf.h>
@@ -167,7 +167,7 @@ debug_dump(const char *fmt, ...)
         size_t write_len = (size_t)len;
         if (write_len >= sizeof(buf))
             write_len = sizeof(buf) - 1;
-		syscall_no_intercept(SYS_write, 2, buf, write_len);
+		syscall_no_intercept(SYS_write, 2, (long)buf, write_len, 0, 0, 0);
     }
 #else
     (void)fmt;
@@ -202,7 +202,7 @@ static struct intercept_desc *
 allocate_next_obj_desc(void)
 {
 	struct intercept_desc *new_desc;
-
+    
 	if (objs != NULL) {
 		if (objs_count == objs_capacity) {
 			new_desc = xmremap(objs,
@@ -219,6 +219,7 @@ allocate_next_obj_desc(void)
 
 	++objs_count;
 	new_desc = objs + objs_count - 1;
+
 	return new_desc;
 }
 
@@ -478,51 +479,63 @@ alloc_trampoline_in_object(struct intercept_desc *desc, struct dl_phdr_info *inf
                 if (ptr[0] != 0 || ptr[1] != 0 || ptr[2] != 0 || ptr[3] != 0) empty = false;
                 
                 if (empty) {
-                    desc->trampoline_address = (uint8_t *)curr;
+                    desc->trampoline_jal_address = (uint8_t *)curr;
+                    desc->trampoline_address = (uint8_t *)curr + 32;
                     
                     // Make executable
                     uintptr_t page = curr & ~(PAGE_SIZE - 1);
-                    long res_s = syscall_no_intercept(SYS_mprotect, page, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC);
+                    long res_s = syscall_no_intercept(SYS_mprotect, page, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC, 0, 0, 0);
                     if (res_s != 0) {
                         return; // Or continue searching?
                     }
                     
-                    // Write trampoline
-                    // 1. addi sp, sp, -48 (PATCH_SP_OFF)
-                    // 2. sd ra, 0(sp) (ORIG_RA_OFF)
-                    // 3. sd t0, 40(sp) (UNUSED_OFF2 - JAL return addr)
-                    // 4. jump to asm_entry_point
-                    
                     extern void asm_entry_point(void);
+                    extern void asm_entry_point_jal(void);
                     uint8_t buff[64];
-                    unsigned int size = 0;
+                    // Clean buff
+                    for(int i=0; i<64; ++i) buff[i]=0;
+
+                    // --- Block 1: JAL Trampoline (at +0) ---
+                    // Used by TYPE_JAL (4-byte patch) which cannot do prologue.
+                    // Must do prologue then jump to asm_entry_point (or asm_entry_point_jal? No, manual prologue here).
+                    // Actually, if we jump to `asm_entry_point_jal`, we don't need prologue here?
+                    // `asm_entry_point_jal` (in intercept_irq_entry.S) DOES prologue:
+                    //   addi sp, sp, -48
+                    //   sd ra, 0
+                    //   mv ra, t0
+                    //   j asm_entry_point
                     
-                    // addi sp, sp, -48
-                    size += rv_addi(buff + size, REG_SP, REG_SP, -48);
+                    // IF `asm_entry_point_jal` is reachable via `jump_abs` (it is), 
+                    // then trampoline just needs to jump to it?
+                    // YES.
+                    // So JAL Trampoline = Jump to `asm_entry_point_jal`.
+                    // But `asm_entry_point_jal` expects `t0` to hold return address?
+                    // `copy_JAL` uses `jal t0, trampoline`. So `t0` holds return address.
+                    // So we just need to preserve `t0`.
+                    // `jump_abs` uses `t1` (regs[6]) as scratch. `t0` is safe and passed through.
                     
-                    // sd ra, 0(sp)
-                    size += rv_sd(buff + size, REG_RA, REG_SP, 0);
+                    unsigned int size1 = 0;
+                    size1 += rvp_jump_abs(buff + size1, 0, 6, (uintptr_t)asm_entry_point_jal);
                     
-                    // sd t0, 32(sp) (UNUSED_OFF1)
-                    size += rv_sd(buff + size, REG_T0, REG_SP, 32);
-                    // sd t0, 16(sp) (RET_ADDR_OFF) - Required for intercept_routine logic
-                    size += rv_sd(buff + size, REG_T0, REG_SP, 16);
+                    // --- Block 2: GP Trampoline (at +32) ---
+                    // Used by TYPE_GP (which already did prologue).
+                    // Just jump to `asm_entry_point`.
+                    // GP uses `jalr ra, trampoline`.
+                    // So `ra` holds return address.
+                    // `asm_entry_point` expects `ra` (or saves it).
                     
-                    // jump to asm_entry_point
-                    // using t1 (6) as scratch
-                    size += rvp_jump_abs(buff + size, 0, 6, (uintptr_t)asm_entry_point); 
+                    unsigned int size2 = 32;
+                    size2 += rvp_jump_abs(buff + size2, 0, 6, (uintptr_t)asm_entry_point); 
                     
-                    uint8_t *tramp = desc->trampoline_address;
-                    for(unsigned int k=0; k<size; ++k) tramp[k] = buff[k];
+                    uint8_t *tramp = desc->trampoline_jal_address;
+                    for(unsigned int k=0; k<64; ++k) tramp[k] = buff[k];
                     
                     __builtin___clear_cache((char *)tramp, (char *)tramp + 64);
                     return;
                 }
             }
-            // syscall_no_intercept(SYS_write, 2, "DEBUG: Segment full, no empty slot\n", 35);
         }
     }
-    
 }
 
 /*
@@ -549,6 +562,10 @@ alloc_trampoline_in_object(struct intercept_desc *desc, struct dl_phdr_info *inf
 static int
 analyze_object(struct dl_phdr_info *info, size_t size, void *data);
 
+static int compare_patches(const void *a, const void *b);
+
+static void write_enable_asm_relocation_space(bool enable_write);
+
 static int
 analyze_object(struct dl_phdr_info *info, size_t size, void *data)
 {
@@ -564,26 +581,41 @@ analyze_object(struct dl_phdr_info *info, size_t size, void *data)
 		section of the vdso. In this case, we just skip it.
 		 */
 		return 0;
-	} else {
-    }
+	}
 
-	desc = allocate_next_obj_desc(); 
+	desc = allocate_next_obj_desc();
 	desc->base_addr = (unsigned char *)info->dlpi_addr;
 	desc->path = strdup(path);
 
+
 	if (should_patch_object(info->dlpi_addr, desc->path)) {
-        debug_dump("Patching object: %s\n", desc->path);
 		find_syscalls(desc);
         alloc_trampoline_in_object(desc, info);
+        write_enable_asm_relocation_space(true);
         create_patch(desc);
-        if (desc->count > 0)
-            activate_patches(desc);
+        write_enable_asm_relocation_space(false);
+            // COMPACTION FIX:
+            // Remove invalid/skipped patches (syscall_num == 0 or TYPE_IGNORE) to ensure
+            // the array remains sorted and contiguous for binary_search.
+            uint32_t valid_count = 0;
+            for (uint32_t i = 0; i < desc->count; ++i) {
+                if (desc->items[i].syscall_num != 0 && desc->items[i].syscall_num != TYPE_IGNORE) {
+                    if (i != valid_count) {
+                        desc->items[valid_count] = desc->items[i];
+                    }
+                    valid_count++;
+                }
+            }
+            desc->count = valid_count;
+
+            if (desc->count > 0) {
+                qsort(desc->items, desc->count, sizeof(struct patch_desc), compare_patches);
+                activate_patches(desc);
+            }
 	} else {
-        debug_dump("Skipping object: %s\n", desc->path);
 		desc->count = 0;
 	}
 
-    debug_dump("analyze_object finished on %s \n", desc->path);
 	return 0;
 }
 
@@ -691,8 +723,15 @@ intercept(int argc, char **argv)
 		xabort("intercept", "libc not found");
 
 	init_tls_offset_table();
-	write_enable_asm_relocation_space(true);
+	
+    // Loops below are REDUNDANT and HARMFUL.
+    // analyze_object already calls allocate_trampoline, create_patch, and activate_patches.
+    // Calling create_patch a second time corrupts patch_desc because it destructively modifies
+    // surrounding_instrs (memmove).
+    // Calling activate_patches a second time is unnecessary overhead.
+    // qsort is now handled in analyze_object.
 
+	/*
 	for (uint32_t i = 0; i < objs_count; ++i) {
 		if (objs[i].count == 0)
 			continue;
@@ -712,6 +751,7 @@ intercept(int argc, char **argv)
 	for (uint32_t i = 0; i < objs_count; ++i) {
 		activate_patches(objs + i);
     }
+    */
 }
 
 
@@ -736,7 +776,7 @@ void
 xabort_errno(int error_code, const char *func, const char *msg)
 {
 	const char main_msg[] = "\033[3;35mlibsyscall_intercept\033[m: \033[1;31mERROR\033[m";
-	syscall_no_intercept(SYS_write, 2, main_msg, sizeof(main_msg) - 1);
+	syscall_no_intercept(SYS_write, 2, (long)main_msg, sizeof(main_msg) - 1, 0, 0, 0);
 
 	if (error_code != 0) {
 		char buf[0x20] = " \033[33m(exit code ";
@@ -763,35 +803,35 @@ xabort_errno(int error_code, const char *func, const char *msg)
 		while (*end)
 			buf[len++] = *end++;
 
-		syscall_no_intercept(SYS_write, 2, buf, len);
+		syscall_no_intercept(SYS_write, 2, (long)buf, len, 0, 0, 0);
 	}
 
 	if (func != NULL) {
 		char start[] = ": \033[32m";
-		syscall_no_intercept(SYS_write, 2, start, sizeof(start) - 1);
+		syscall_no_intercept(SYS_write, 2, (long)start, sizeof(start) - 1, 0, 0, 0);
 
 		size_t len = 0;
 		while (func[len])
 			++len;
-		syscall_no_intercept(SYS_write, 2, func, len);
+		syscall_no_intercept(SYS_write, 2, (long)func, len, 0, 0, 0);
 
 		char end[] = "()\033[m";
-		syscall_no_intercept(SYS_write, 2, end, sizeof(end) - 1);
+		syscall_no_intercept(SYS_write, 2, (long)end, sizeof(end) - 1, 0, 0, 0);
 	}
 
 	if (msg != NULL) {
 		char start[] = ": ";
-		syscall_no_intercept(SYS_write, 2, start, sizeof(start) - 1);
+		syscall_no_intercept(SYS_write, 2, (long)start, sizeof(start) - 1, 0, 0, 0);
 
 		size_t len = 0;
 		while (msg[len])
 			++len;
-		syscall_no_intercept(SYS_write, 2, msg, len);
+		syscall_no_intercept(SYS_write, 2, (long)msg, len, 0, 0, 0);
 	}
 
-	syscall_no_intercept(SYS_write, 2, "\n", 1);
+	syscall_no_intercept(SYS_write, 2, (long)"\n", 1, 0, 0, 0);
 
-	syscall_no_intercept(SYS_exit_group, 1);
+	syscall_no_intercept(SYS_exit_group, 1, 0, 0, 0, 0, 0);
 
 	__builtin_unreachable();
 }
@@ -850,22 +890,21 @@ binary_search_fuzzy(const struct patch_desc *items, uint32_t count, uint64_t ret
 __attribute__((section(".text.irqentry"), used)) struct wrapper_ret
 detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_addr, uint64_t JAL_ret_addr)
 {
-    syscall_no_intercept(SYS_write, 2, "DEBUG: JAL_addr=", 16);
-    for (int i = 15; i >= 0; --i) {
-        int nibble = (JAL_ret_addr >> (i * 4)) & 0xF;
-        char c = (nibble < 10) ? ('0' + nibble) : ('a' + nibble - 10);
-        syscall_no_intercept(SYS_write, 2, &c, 1);
-    }
-    syscall_no_intercept(SYS_write, 2, "\n", 1);
     
     const uint64_t check_ret_addrs[4] = {MID_ret_addr, SML_ret_addr, GW_ret_addr, JAL_ret_addr};
 
+    int bounds_found = 0;
 	for (uint8_t ra_idx = 0; ra_idx < (sizeof(check_ret_addrs) / sizeof(check_ret_addrs[0])); ++ra_idx) {
 		uint64_t ra = check_ret_addrs[ra_idx];
 		for (uint32_t o = 0; o < objs_count; ++o) {
 			// check if current obj contains the return address
 			if (ra < (uint64_t)objs[o].text_start || ra > (uint64_t)objs[o].text_end)
 				continue;
+            
+            // Debug bounds hit
+            if (ra_idx == 3) { // Only for JAL
+                 bounds_found = 1;
+            }
 
 			int64_t match_idx = binary_search_fuzzy(objs[o].items, objs[o].count, ra);
 			if (match_idx >= 0) {
@@ -876,9 +915,21 @@ detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_a
 				switch (sn) {
 				case TYPE_GP_COMPLETE:
 				case TYPE_GP_FAILSAFE:
+                    // Relaxed check: Allow match if found via GW_addr (a2/ra) OR JAL_addr (a3/t0).
+                    // If JAL_addr (t0) matched, we MUST return TYPE_JAL (-6) to tell the wrapper that
+                    // the return address is in RET_ADDR_OFF (16), not UNUSED_OFF1 (32).
+                    // This triggers the .Ljal path which prevents clobbering.
 					if (ra_idx == 2)
 						return (struct wrapper_ret){sn, reloc_addr};
+                    if (ra_idx == 3)
+                        return (struct wrapper_ret){TYPE_JAL, reloc_addr};
 					break;
+                case TYPE_IGNORE:
+                    // Workaround: Patch found but SN is TYPE_IGNORE (-100).
+                    // If matched via t0, return TYPE_JAL.
+                    if (ra_idx == 3)
+                         return (struct wrapper_ret){TYPE_JAL, reloc_addr};
+                    break;
                 case TYPE_JAL:
                     if (ra_idx == 3)
                         return (struct wrapper_ret){sn, reloc_addr};
@@ -887,10 +938,17 @@ detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_a
                     // SML/Other types removed
 					break;
 				}
+				if (ra_idx == 3) {
+                    // MatchButTypeFail debug removed
+                }
 			 break;
-		}
+		} else {
+             // SearchFail debug removed
+        }
 	}
 	}
+    
+    if (!bounds_found) { /* NoBoundsMatch debug removed */ }
 	
 	xabort(__func__, "failed to identify patch");
 }
@@ -1056,6 +1114,26 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 	long *result_ptr = &result_safe.a0;
 	int forward_to_kernel = true;
 	const struct patch_desc *patch = get_cur_patch(a6);
+
+    if (a7 == 57) { // close
+         if (a0 == 1 || a0 == 2) {
+             const char *msg1 = (a0==1) ? "WARNING: Closing FD 1\n" : "WARNING: Closing FD 2\n";
+             intercept_log(msg1, strlen(msg1));
+             if (patch && patch->containing_lib_path) {
+                  const char *msg2 = "From: ";
+                  intercept_log(msg2, strlen(msg2));
+                  intercept_log(patch->containing_lib_path, strlen(patch->containing_lib_path));
+                  intercept_log("\n", 1);
+             } else {
+                 const char *msg3 = "From: Unknown\n";
+                 intercept_log(msg3, strlen(msg3));
+             }
+         }
+    }
+    if (a7 == 56) { // openat
+        // Trace return value? We are BEFORE syscall.
+        // We can check if we are opening something critical?
+    }
 	/*
 	 * The RISC-V version of this library doesn't rely on offsets, instead
 	 * ecall args get passed directly. It's more straightforward, and

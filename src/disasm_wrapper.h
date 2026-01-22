@@ -75,16 +75,7 @@ struct intercept_disasm_result {
 	bool is_ra_used;
 	uint8_t reg_set;
 
-#ifndef NDEBUG
-	/*
-	 * Switched to char array instead of pointer because capstone doesn't
-	 * allocate (thankfully) space for each instruction's mnemonic, but
-	 * it uses the same space, i.e., all surrounding instructions would share
-	 * the same string. This is only in DEBUG mode, so we can be generous
-	 * with 16 B.
-	 */
-	char mnemonic[16];
-#endif
+	/* Mnemonic removed to avoid NDEBUG ABI mismatch */
 };
 
 struct intercept_disasm_context;

@@ -348,6 +348,20 @@
 
 
 	.section .text.irqentry, "ax"
+
+	.global	asm_entry_point_jal
+	.hidden	asm_entry_point_jal
+	.type	asm_entry_point_jal, @function
+asm_entry_point_jal:
+	.cfi_startproc
+	addi	sp, sp, -PATCH_SP_OFF
+	sd	ra, ORIG_RA_OFF(sp)
+    sd  t0, RET_ADDR_OFF(sp)
+	mv	ra, t0
+	j	asm_entry_point
+	.cfi_endproc
+	.size	asm_entry_point_jal, . - asm_entry_point_jal
+
 asm_entry_point:
 	.cfi_startproc
 	/*********************************************************************
@@ -553,8 +567,8 @@ detect_cur_patch_wrapper:
 	mv	a1, a7
 	// a2 will hold TYPE_GW ret addr
 	ld	a2, UNUSED_OFF1(s0)
-    // a3 will hold TYPE_JAL ret addr (now ra saved at UNUSED_OFF1 due to patcher fix)
-    ld  a3, UNUSED_OFF1(s0)
+    // a3 will hold TYPE_JAL ret addr (loaded from RET_ADDR_OFF, safe from asm_entry_point clobber)
+    ld  a3, RET_ADDR_OFF(s0)
 
 	call	detect_cur_patch
 	/*
@@ -579,13 +593,15 @@ detect_cur_patch_wrapper:
 	j	.Ldone
 
 .Ljal:
-    // Restore RA
-    ld a0, UNUSED_OFF1(s0)
-    sd a0, 0(s0)
+    // For TYPE_JAL, RET_ADDR_OFF is already correct.
+    // ORIG_RA_OFF holds original RA (libfabric caller).
+    // Do NOTHING.
+    j .Ldone
     
-    // Set RET_ADDR_OFF to ra (JAL return addr), which is the key for get_cur_patch
-    ld a0, UNUSED_OFF1(s0)
-    sd a0, RET_ADDR_OFF(s0)
+    // For TYPE_JAL (offset -6), we use jal t0.
+    // t0 is saved in RET_ADDR_OFF(s0) by trampoline.
+    // So RET_ADDR_OFF already holds the correct return address.
+    // DO NOT overwrite it with UNUSED_OFF1 (ra), which is garbage.
     j .Ldone
 
 	SDSP_G	a0, 17

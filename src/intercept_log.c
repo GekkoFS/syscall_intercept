@@ -47,12 +47,6 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-/*
- * For simplicity, declare syscall_no_intercept() with return value 'long'
- * because nothing in this TU needs the a1 register, only a0 is checked.
- */
-extern long
-syscall_no_intercept(long syscall_number, ...);
 
 /*
  * print_cstr - similar to strcpy, but returns a pointer to the terminating
@@ -815,7 +809,6 @@ intercept_setup_log(const char *path, const char *trunc)
 	if (path == NULL || path[0] == '\0')
 		return;
 
-    syscall_no_intercept(SYS_write, 2, "DEBUG: intercept_setup_log called\n", 32);
 
 	char *c = full_path;
 	while ((*c = *path) != '\0') {
@@ -826,7 +819,7 @@ intercept_setup_log(const char *path, const char *trunc)
 	/* c points to the terminating null */
 	if (c[-1] == '-') {
 		/* if the last char was '-', append the pid to the path */
-		long pid = syscall_no_intercept(SYS_getpid);
+		long pid = syscall_no_intercept(SYS_getpid, 0, 0, 0, 0, 0, 0);
 		if (pid < 0)
 			return;
 
@@ -834,18 +827,9 @@ intercept_setup_log(const char *path, const char *trunc)
 	}
     
     // Debug path
-    syscall_no_intercept(SYS_write, 2, "DEBUG: Log Path: ", 17);
-    syscall_no_intercept(SYS_write, 2, full_path, c - full_path); // c might be moved by print_number? 
-    // Wait, print_number does NOT move c (it returns new end).
-    // wait `print_number(c, ...)` writes to c.
-    // I need the end pointer. 
-    // `c` originally points to null. `print_number` writes digits there.
-    // I should calculate new length.
+    syscall_no_intercept(SYS_write, 2, (long)full_path, c - full_path, 0, 0, 0); 
     
-    // For simplicity, just write fixed string or strlen.
-    // full_path is 0-init?
-    // Let's just trust valid path.
-    syscall_no_intercept(SYS_write, 2, "\n", 1);
+    syscall_no_intercept(SYS_write, 2, (long)"\n", 1, 0, 0, 0);
 
 	int flags = O_CREAT | O_RDWR | O_APPEND | O_TRUNC;
 	if (trunc && trunc[0] == '0')
@@ -854,12 +838,10 @@ intercept_setup_log(const char *path, const char *trunc)
 	intercept_log_close(); /* in case a log was already open */
 
 	log_fd = (int)syscall_no_intercept(SYS_openat, AT_FDCWD,
-						full_path, flags, 0700);
+						(long)full_path, flags, 0700, 0, 0);
     
     if (log_fd < 0) {
-         syscall_no_intercept(SYS_write, 2, "DEBUG: open failed\n", 19);
     } else {
-         syscall_no_intercept(SYS_write, 2, "DEBUG: open success\n", 20);
     }
 
 	xabort_on_syserror(log_fd, __func__, "opening log");
@@ -957,7 +939,7 @@ intercept_log_syscall(const struct patch_desc *patch,
 
 	*c++ = '\n';
 
-	syscall_no_intercept(SYS_write, log_fd, buffer, c - buffer);
+	syscall_no_intercept(SYS_write, log_fd, (long)buffer, c - buffer, 0, 0, 0);
 }
 
 /*
@@ -969,7 +951,7 @@ void
 intercept_log(const char *buffer, size_t len)
 {
 	if (log_fd >= 0)
-		syscall_no_intercept(SYS_write, log_fd, buffer, len);
+		syscall_no_intercept(SYS_write, log_fd, (long)buffer, len, 0, 0, 0);
 }
 
 /*
@@ -980,7 +962,7 @@ void
 intercept_log_close(void)
 {
 	if (log_fd >= 0) {
-		syscall_no_intercept(SYS_close, log_fd);
+		syscall_no_intercept(SYS_close, log_fd, 0, 0, 0, 0, 0);
 		log_fd = -1;
 	}
 }

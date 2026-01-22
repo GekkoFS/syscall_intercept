@@ -59,26 +59,20 @@ static int32_t *sys_filter_ptr = NULL;
  * For simplicity, declare syscall_no_intercept() with return value 'long'
  * because nothing in this TU needs the a1 register, only a0 is checked.
  */
-extern long syscall_no_intercept(long syscall_number, ...);
-
-/*
- * open_orig_file
- *
- * Instead of looking for the needed metadata in already mmap library,
- * all this information is read from the file, thus its original place,
- * the file where the library is in an FS. The loaded library is mmaped
- * already of course, but not necessarily the whole file is mapped as one
- * readable mem mapping -- only some segments are present in memory, but
- * information about the file's sections, and the sections themselves might
- * only be present in the original file.
- * Note on naming: memory has segments, the object file has sections.
- */
 static int
 open_orig_file(const struct intercept_desc *desc)
 {
 	int fd;
 
-	fd = syscall_no_intercept(SYS_openat, AT_FDCWD, desc->path, O_RDONLY);
+	fd = syscall_no_intercept(SYS_openat, AT_FDCWD, (long)desc->path, O_RDONLY, 0, 0, 0);
+
+    // Simple int to string conversion for logging
+    if (fd == 0 || fd == 1 || fd == 2) {
+         syscall_no_intercept(SYS_write, 2, (long)"CRITICAL: open_orig_file returned StdIO FD!\n", 40, 0, 0, 0);
+         // Print FD
+         char fdbuf[2] = { (char)('0' + fd), '\n' };
+         syscall_no_intercept(SYS_write, 2, (long)fdbuf, 2, 0, 0, 0);
+    }
 
 	xabort_on_syserror(fd, __func__, NULL);
 
@@ -147,7 +141,6 @@ find_sections(struct intercept_desc *desc, int fd)
 		char *name = sec_string_table + section->sh_name;
 
         /* Debug Loop */
-        // syscall_no_intercept(SYS_write, 2, "DEBUG: sect: ", 13, 0, 0, 0);
         // int len=0; while(name[len]) len++;
         // syscall_no_intercept(SYS_write, 2, name, len, 0, 0, 0);
         // syscall_no_intercept(SYS_write, 2, "\n", 1, 0, 0, 0);
@@ -504,6 +497,9 @@ add_new_patch(struct intercept_desc *desc)
 	return &(desc->items[desc->count++]);
 }
 
+
+
+
 static void
 fill_up_patch(struct intercept_desc *desc, struct patch_desc *patch,
 		struct intercept_disasm_result surr[], uint8_t syscall_idx)
@@ -521,6 +517,10 @@ fill_up_patch(struct intercept_desc *desc, struct patch_desc *patch,
 	 */
 	patch->surrounding_instrs =
 		(struct intercept_disasm_result *)malloc(surr_size);
+
+    if (patch->surrounding_instrs == NULL) {
+          xabort(__func__, "malloc failed");
+    }
 	memcpy(patch->surrounding_instrs, surr, surr_size);
 
 	patch->syscall_addr = surr[syscall_idx].address;
@@ -534,7 +534,7 @@ fill_up_patch(struct intercept_desc *desc, struct patch_desc *patch,
 	patch->syscall_idx = syscall_idx;
 
     // Calculate syscall number to filter rt_sigreturn
-    int32_t syscall_num = -1;
+    long syscall_num = -1;
 	for (size_t i = 0; i < syscall_idx; ++i) {
 		if (has_jump(desc, surr[i].address))
 			syscall_num = -1;
@@ -545,20 +545,16 @@ fill_up_patch(struct intercept_desc *desc, struct patch_desc *patch,
 			syscall_num = -1;
 	}
 
-    // Default to GP_COMPLETE for now, as we use global trampoline.
-    patch->syscall_num = TYPE_GP_COMPLETE; 
-
-    if (syscall_num != -1) {
-         // Only patch identified syscalls (set type to GP_COMPLETE)
+    if (syscall_num == 139) {
+        // rt_sigreturn (139)
+        // Explicitly IGNORE to skip patching
+        patch->syscall_num = TYPE_IGNORE;
+    } else if (syscall_num != -1) {
+         // Only patch identified syscalls
          patch->syscall_num = TYPE_GP_COMPLETE;
     } else {
-         // Skip patching unknowns to avoid hitting rt_sigreturn
-         patch->syscall_num = 999;
-    }
-
-    // Safety check for rt_sigreturn (139) used by libc
-    if (syscall_num == 139) {
-        patch->syscall_num = 139; // This will cause activate_patches to skip it
+         // Skip patching unknowns to avoid abort in activate_patches
+         patch->syscall_num = TYPE_IGNORE;
     }
 }
 
@@ -720,7 +716,7 @@ find_syscalls(struct intercept_desc *desc)
 		find_jumps_in_section_rela(desc,
 		    desc->rela_tables.headers + i, fd);
 
-	syscall_no_intercept(SYS_close, fd);
+	syscall_no_intercept(SYS_close, fd, 0, 0, 0, 0, 0);
 
 	init_syscall_filter();
 

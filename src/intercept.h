@@ -184,6 +184,7 @@ struct intercept_desc {
 
 	/* the RISC-V version only needs one trampoline per patched library */
 	uint8_t *trampoline_address;
+    uint8_t *trampoline_jal_address;
 	int32_t trampoline_offset;
 };
 

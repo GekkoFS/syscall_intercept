@@ -55,29 +55,10 @@
 /*
  * syscall_no_intercept declaration (implemented in util.S)
  */
-long syscall_no_intercept(long syscall_number, ...);
-long raw_syscall(long nr, ...);
-
 /*
- * syscall_no_intercept wrapper using raw_syscall (ASM)
+ * syscall_no_intercept implementation using inline assembly
+ * to avoid recursion and ensure correct register mapping.
  */
-long
-syscall_no_intercept(long nr, ...)
-{
-    long a0, a1, a2, a3, a4, a5;
-    va_list ap;
-    va_start(ap, nr);
-    a0 = va_arg(ap, long);
-    a1 = va_arg(ap, long);
-    a2 = va_arg(ap, long);
-    a3 = va_arg(ap, long);
-    a4 = va_arg(ap, long);
-    a5 = va_arg(ap, long);
-    va_end(ap);
-
-    return raw_syscall(nr, a0, a1, a2, a3, a4, a5);
-}
-
 long
 syscall_error_code(long result)
 {
@@ -86,12 +67,10 @@ syscall_error_code(long result)
 	return 0;
 }
 
-long raw_syscall(long nr, ...);
-
 void
 mprotect_no_intercept(void *addr, size_t len, int prot, const char *msg)
 {
-	long ret = raw_syscall(SYS_mprotect, addr, len, prot);
+	long ret = syscall_no_intercept(SYS_mprotect, (long)addr, len, prot, 0, 0, 0);
 	if (ret != 0)
 		xabort_errno((int)ret, msg, "mprotect failed");
 }
@@ -100,9 +79,14 @@ void *
 xmmap_anon(size_t size)
 {
 	long addr;
+    
+    // Debug mmap call
+
+    // Use hint 0x60000000 (Safe zone)
+    void *hint = (void *)0x60000000;
 
 	addr = syscall_no_intercept(SYS_mmap,
-					NULL, size,
+					(long)hint, size,
 					PROT_READ | PROT_WRITE,
 					MAP_PRIVATE | MAP_ANON, -1, 0);
 
@@ -116,8 +100,8 @@ xmremap(void *addr, size_t old, size_t new)
 {
 	long new_addr;
 
-	new_addr = syscall_no_intercept(SYS_mremap, addr,
-					old, new, MREMAP_MAYMOVE);
+	new_addr = syscall_no_intercept(SYS_mremap, (long)addr,
+					old, new, MREMAP_MAYMOVE, 0, 0);
 
 	xabort_on_syserror(new_addr, __func__, NULL);
 
@@ -129,7 +113,7 @@ xmunmap(void *addr, size_t len)
 {
 	long result;
 
-	result = syscall_no_intercept(SYS_munmap, addr, len);
+	result = syscall_no_intercept(SYS_munmap, (long)addr, len, 0, 0, 0, 0);
 
 	xabort_on_syserror(result, __func__, NULL);
 }
@@ -139,7 +123,8 @@ xlseek(long fd, unsigned long off, int whence)
 {
 	long result;
 
-	result = syscall_no_intercept(SYS_lseek, fd, off, whence);
+
+	result = syscall(SYS_lseek, fd, off, whence);
 
 	xabort_on_syserror(result, __func__, NULL);
 
@@ -158,7 +143,7 @@ print_hex_local(uintptr_t val)
 		*--ptr = (d < 10) ? (d + '0') : (d - 10 + 'a');
 		val /= 16;
 	} while (val != 0 && ptr > buf);
-	syscall_no_intercept(SYS_write, 2, ptr, buf + 17 - ptr, 0, 0, 0);
+	syscall_no_intercept(SYS_write, 2, (long)ptr, buf + 17 - ptr, 0, 0, 0);
 }
 
 void
@@ -168,8 +153,9 @@ xread(long fd, void *buffer, size_t size)
     size_t total_read = 0;
     char *buf_ptr = (char *)buffer;
 
+
     while (total_read < size) {
-	    result = syscall_no_intercept(SYS_read, fd, buf_ptr + total_read, size - total_read);
+	    result = syscall(SYS_read, fd, buf_ptr + total_read, size - total_read);
         
         if (result < 0) {
              xabort_errno(syscall_error_code(result), __func__, NULL);
@@ -194,7 +180,7 @@ xwrite(long fd, const void *buffer, size_t size)
     const char *buf_ptr = (const char *)buffer;
 
     while (total_written < size) {
-	    result = syscall_no_intercept(SYS_write, fd, buf_ptr + total_written, size - total_written);
+	    result = syscall(SYS_write, fd, buf_ptr + total_written, size - total_written);
         
         if (result < 0) {
              xabort_errno(syscall_error_code(result), __func__, NULL);

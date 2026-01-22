@@ -37,6 +37,11 @@
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
+/*
+ * syscall_no_intercept - execute a syscall without interception
+ */
+long syscall_no_intercept(long number, ...);
+
 void mprotect_no_intercept(void *addr, size_t len, int prot,
 			const char *msg_on_error);
 /*

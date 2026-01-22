@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2022, Intel Corporation
+ * Copyright 2017, Intel Corporation
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -30,52 +30,42 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-/*
- * syscall_no_intercept -- syscall without interception
- *
- * Call syscall_no_intercept to make syscalls
- * from the interceptor library, once glibc is already patched.
- * Don't use the syscall function from glibc, that
- * would just result in an infinite recursion.
- */
+#ifdef __riscv
 
 .text
-.global raw_syscall
-.type raw_syscall, @function
+.global syscall_no_intercept
+.type syscall_no_intercept, @function
 
-raw_syscall:
-	/*
-	 * Function signature: long raw_syscall(long number, ...);
-	 *
-	 * Arguments are passed in registers:
-	 * a0: syscall number
-	 * a1: arg0
-	 * a2: arg1
-	 * a3: arg2
-	 * a4: arg3
-	 * a5: arg4
-	 * a6: arg5
-	 *
-	 * RISC-V Linux syscall calling convention:
-	 * a7: syscall number
-	 * a0: arg0
-	 * a1: arg1
-	 * a2: arg2
-	 * a3: arg3
-	 * a4: arg4
-	 * a5: arg5
-	 *
-	 * Return value in a0.
-	 */
+syscall_no_intercept:
+    /*
+     * C ABI:
+     * a0 = syscall_number
+     * a1 = arg0
+     * a2 = arg1
+     * a3 = arg2
+     * a4 = arg3
+     * a5 = arg4
+     * a6 = arg5
+     *
+     * Syscall ABI:
+     * a7 = syscall_number
+     * a0 = arg0
+     * a1 = arg1
+     * a2 = arg2
+     * a3 = arg3
+     * a4 = arg4
+     * a5 = arg5
+     */
+    mv a7, a0
+    mv a0, a1
+    mv a1, a2
+    mv a2, a3
+    mv a3, a4
+    mv a4, a5
+    mv a5, a6
+    ecall
+    ret
 
-	mv a7, a0
-	mv a0, a1
-	mv a1, a2
-	mv a2, a3
-	mv a3, a4
-	mv a4, a5
-	mv a5, a6
-	ecall
-	ret
-
-.size raw_syscall, .-raw_syscall
+#else
+#error "Only RISC-V supported"
+#endif
