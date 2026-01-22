@@ -417,6 +417,8 @@ exec_relocated_instructions:
 	// save ra and a0 on the stack before the spinlock, "prologue"
 	sd	ra, UNUSED_OFF1(sp)
 	sd	a0, UNUSED_OFF2(sp)
+    // critical: preserve t1 as ioctl wrapper relies on it, and call clobbers it
+    sd  t1, 8(sp)
 
 	/*
 	 * TLS is used here to save data while executing patched instructions;
@@ -439,6 +441,9 @@ exec_relocated_instructions:
 	 */
 	ld	ra, RELOC_ADDR_OFF(sp)
 	MV_STACK_TO_TLS
+    
+    // restore t1
+    ld t1, 8(sp)
 
 	/*
 	 * Jump to the relocated instructions using ra because it is unlikely that

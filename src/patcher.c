@@ -790,6 +790,14 @@ copy_JAL(struct patch_desc *patch, uint8_t *trampoline_addr)
          }
     }
 
+	/*
+	 * RISC-V specific: The "relocated instructions" block must end with
+     * a return to the caller (exec_relocated_instructions).
+     * The caller used `jalr ra` to get here, so we must `jalr ra` back.
+	 */
+    // Append 'ret' (jalr zero, ra, 0)
+    instrs_size += rvpc_jalr(instrs_buff + instrs_size, REG_ZERO, REG_RA, 0);
+
 	if (instrs_size > (int)sizeof(instrs_buff))
 		xabort(__func__, "copy_JAL buffer overflow");
 
