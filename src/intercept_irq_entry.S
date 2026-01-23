@@ -414,11 +414,24 @@ asm_entry_point:
  */
 exec_relocated_instructions:
 	.cfi_startproc
-	// save ra and a0 on the stack before the spinlock, "prologue"
-	sd	ra, UNUSED_OFF1(sp)
-	sd	a0, UNUSED_OFF2(sp)
-    // critical: preserve t1 as ioctl wrapper relies on it, and call clobbers it
-    sd  t1, 8(sp)
+    // Safe Prologue: Save ALL caller-saved registers to avoid clobbering by spinlock_aq
+    addi sp, sp, -160
+    sd ra, 0(sp)
+    sd a0, 8(sp)
+    sd a1, 16(sp)
+    sd a2, 24(sp)
+    sd a3, 32(sp)
+    sd a4, 40(sp)
+    sd a5, 48(sp)
+    sd a6, 56(sp)
+    sd a7, 64(sp)
+    sd t0, 72(sp)
+    sd t1, 80(sp)
+    sd t2, 88(sp)
+    sd t3, 96(sp)
+    sd t4, 104(sp)
+    sd t5, 112(sp)
+    sd t6, 120(sp)
 
 	/*
 	 * TLS is used here to save data while executing patched instructions;
@@ -427,12 +440,30 @@ exec_relocated_instructions:
 	LASYMT	a0, lock_TLS
 	call	spinlock_aq
 
-	// now ra can be stored in reloc_ra_temp before the stack gets deallocated
-	ld	ra, UNUSED_OFF1(sp)
-	SDSYMT	ra, reloc_ra_temp, a0
+	// store ra (Entry RA) in reloc_ra_temp
+    // We load it from our safe stack (0(sp))
+    ld ra, 0(sp)
+    // Use t0 as temp register for SDSYMT (safe because we restore t0 later)
+	SDSYMT	ra, reloc_ra_temp, t0
 
-	// used as an argument with the spinlock, restore to the original value
-	ld	a0, UNUSED_OFF2(sp)
+    // Restore ALL registers
+    ld ra, 0(sp)
+    ld a0, 8(sp)
+    ld a1, 16(sp)
+    ld a2, 24(sp)
+    ld a3, 32(sp)
+    ld a4, 40(sp)
+    ld a5, 48(sp)
+    ld a6, 56(sp)
+    ld a7, 64(sp)
+    ld t0, 72(sp)
+    ld t1, 80(sp)
+    ld t2, 88(sp)
+    ld t3, 96(sp)
+    ld t4, 104(sp)
+    ld t5, 112(sp)
+    ld t6, 120(sp)
+    addi sp, sp, 160
 
 	/*
 	 * Before executing the relocated instructions, sp must be in its original
@@ -441,9 +472,6 @@ exec_relocated_instructions:
 	 */
 	ld	ra, RELOC_ADDR_OFF(sp)
 	MV_STACK_TO_TLS
-    
-    // restore t1
-    ld t1, 8(sp)
 
 	/*
 	 * Jump to the relocated instructions using ra because it is unlikely that
