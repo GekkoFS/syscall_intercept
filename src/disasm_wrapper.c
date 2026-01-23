@@ -185,8 +185,6 @@ get_a7(struct intercept_disasm_result *result, struct cs_insn *insn)
 		}
 		/* fallthrough */
 	default:
-		if (insn->detail->riscv.operands[0].access > 0x1)
-			result->is_a7_modified = true;
 		return;
 	}
 }
@@ -222,12 +220,18 @@ check_reg_set(struct intercept_disasm_result *result, struct cs_insn *insn)
 	cs_riscv_op op0 = insn->detail->riscv.operands[0];
 	cs_riscv_op op1 = insn->detail->riscv.operands[1];
 
-	if (op0.access == 0x2 && (op0.type != op1.type || op0.reg != op1.reg))
+	if (op0.type == RISCV_OP_REG && (op0.reg != op1.reg)) {
 		result->reg_set = op0.reg - 1;
+        if (op0.reg == RISCV_REG_SP)
+            result->is_sp_modified = true;
+    }
 #ifdef __riscv_c
 	// ra implicitly overwritten
 	else if (insn->id == RISCV_INS_C_JALR && op0.reg != RISCV_REG_RA)
 		result->reg_set = RISCV_REG_RA - 1;
+    // Check for compressed stack modifications
+    else if (insn->id == RISCV_INS_C_ADDI16SP || insn->id == RISCV_INS_C_ADDI4SPN)
+        result->is_sp_modified = true;
 #endif
 }
 
@@ -298,7 +302,12 @@ intercept_disasm_next_instruction(struct intercept_disasm_context *context,
 	 * is costly.
 	 * For now just skip it unless it becomes needed in the future...
 	 */
-	result.has_ip_relative_opr = (context->insn->id == RISCV_INS_AUIPC);
+    // Explicitly check for compressed branches which might not be grouped correctly
+    if (context->insn->id == RISCV_INS_C_BEQZ || context->insn->id == RISCV_INS_C_BNEZ) {
+        result.has_ip_relative_opr = true;
+    }
+
+	result.has_ip_relative_opr |= (context->insn->id == RISCV_INS_AUIPC);
     result.is_auipc = (context->insn->id == RISCV_INS_AUIPC);
 	result.is_syscall = (context->insn->id == RISCV_INS_ECALL);
 

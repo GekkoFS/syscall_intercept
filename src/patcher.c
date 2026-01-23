@@ -52,6 +52,7 @@
 #include <stdlib.h>
 
 #include <stdio.h>
+#include <fcntl.h>
 
 
 
@@ -112,14 +113,14 @@ is_copiable_before_syscall(struct intercept_disasm_result ins)
 		return false;
 
 	/*
-	 * Reject instructions that modify syscall arguments (a0-a6).
-	 * Reg set is 1-based index shifted by -1.
-	 * REG_A0=10 (index 9), REG_A6=16 (index 15).
+	 * Reject instructions that modify syscall arguments (a0-a6)
+	 * or the stack pointer (sp).
 	 */
 	if (ins.reg_set >= (REG_A0 - 1) && ins.reg_set <= (16 - 1))
 		return false;
 
-
+	if (ins.is_sp_modified)
+		return false;
 
 	return !(ins.has_ip_relative_opr || ins.is_abs_jump || ins.is_syscall || ins.is_ret);
 }
@@ -127,15 +128,14 @@ is_copiable_before_syscall(struct intercept_disasm_result ins)
 
 /*
  * is_copiable_after_syscall
- * checks if an instruction found after a syscall instruction
- * can be copied (and thus overwritten).
- *
- * Notice: we allow the copy of ret instructions.
  */
 static bool
 is_copiable_after_syscall(struct intercept_disasm_result ins)
 {
 	if (!ins.is_set)
+		return false;
+
+	if (ins.is_sp_modified)
 		return false;
 
 	return !(ins.has_ip_relative_opr || ins.is_syscall || ins.is_ret);
@@ -453,8 +453,8 @@ finalize_and_jump_back(struct patch_desc *patch)
 		instrs_size += rv_ld(instrs_buff + instrs_size,
 					REG_RA, REG_SP, ORIG_RA_OFF);
         
-        // 4. Restore Stack Pointer (48 bytes: 16 patch + 32 trampoline)
-        instrs_size += rv_addi(instrs_buff + instrs_size, REG_SP, REG_SP, 48);
+        // 4. Restore Stack Pointer
+        instrs_size += rv_addi(instrs_buff + instrs_size, REG_SP, REG_SP, PATCH_SP_OFF);
         
         // 5. Jump to return address
         instrs_size += rv_jalr(instrs_buff + instrs_size, REG_ZERO, ret_reg, 0);
@@ -465,31 +465,19 @@ finalize_and_jump_back(struct patch_desc *patch)
         instrs_size += sizeof(addr);
         
 	} else {
-        // copy the jump instruction to return to glibc (ra already holds address or logic is implicit)
-        // For TYPE_GP, ra holds return address. We must restore stack too!
-        // TYPE_GP also uses 48 bytes (16 patch + 32 global trampoline).
+        // TYPE_GP_COMPLETE patches have their own restoration block at 'return_address'.
+        // finalize_and_jump_back should just jump there without clobbering RA or SP again.
         
-        // Fix: Restore RA from stack.
-        // Stack at entry to Finalize is SP_orig - 48 (set by patch prologue).
-        // Saved RA is at 0(sp).
-        
-        // 1. ld ra, 0(sp)
-        instrs_size += rvpc_ld(instrs_buff + instrs_size, REG_RA, REG_SP, ORIG_RA_OFF);
-        
-        // 2. addi sp, sp, 48 (Restore SP)
-        instrs_size += rv_addi(instrs_buff + instrs_size, REG_SP, REG_SP, PATCH_SP_OFF);
-        
-        // 3. Load Jump Target into T0 (using PC-relative load)
-        // auipc t0, 0
+        // 1. auipc t0, 0
         instrs_size += rv_auipc(instrs_buff + instrs_size, REG_T0, 0);
         
-        // ld t0, 12(t0) (skip auipc, ld, jalr = 12 bytes)
+        // 2. ld t0, 12(t0) (skip 12 bytes: auipc, ld, jalr = 12 bytes)
         instrs_size += rv_ld(instrs_buff + instrs_size, REG_T0, REG_T0, 12);
         
-        // 4. jalr zero, t0, 0 (Jump to wrapper return address)
+        // 3. jalr zero, t0, 0
         instrs_size += rv_jalr(instrs_buff + instrs_size, REG_ZERO, REG_T0, 0);
         
-        // 5. Data (Target Address)
+        // 4. Data
         uint64_t addr = (uintptr_t)patch->return_address;
         memcpy(instrs_buff + instrs_size, &addr, sizeof(addr));
         instrs_size += sizeof(addr);
@@ -519,22 +507,19 @@ relocate_instrs(struct patch_desc *patch)
 		load_orig_ra_temp();
 
 	/* copy patched instructions before ecall */
-	before_ecall_size = patch->syscall_addr - start_addr;
+    bool syscall_in_patch = (patch->syscall_addr >= start_addr) && (patch->syscall_addr < (start_addr + patch_size));
     
-    // Manual relocation loop for before ecall
-    uint8_t *dst_iter = cur_asm_relocation_space;
+    if (syscall_in_patch) {
+	    before_ecall_size = patch->syscall_addr - start_addr;
+    } else {
+        before_ecall_size = patch_size;
+    }
+
+	if (patch->is_ra_used_before)
+		load_orig_ra_temp();
     
-    // We need to iterate instruction by instruction to find AUIPC
-    // Since we don't have the disasm_result here easily (it's in patch struct but indices are tricky)
-    // we can re-disassemble or simpler: just use 4-byte steps for RISC-V usually, but verify?
-    // Wait, struct patch_desc has surrounding_instrs.
-    
+    // Copy instructions
     struct intercept_disasm_result *instrs = patch->surrounding_instrs;
-    // backtrack to find start index
-    // patch->syscall_idx is relative to the START of surrounding_instrs array.
-    // We need to find which instruction corresponds to 'start_addr'.
-    // check_patch_alignment might have adjusted patch start.
-    
     int start_idx = -1;
     for(int i=0; i<SURROUNDING_INSTRS_NUM; ++i) {
         if(instrs[i].address == start_addr) {
@@ -543,17 +528,19 @@ relocate_instrs(struct patch_desc *patch)
         }
     }
     
-    // If we can't find start address in surrounding instrs (unlikely), fallback to memcpy
     if(start_idx == -1) {
     	memcpy(cur_asm_relocation_space, start_addr, before_ecall_size);
 	    cur_asm_relocation_space += before_ecall_size;
     } else {
-        // Iterate from start_idx up to syscall_idx
-        for(int i = start_idx; i < patch->syscall_idx; ++i) {
-             memcpy(dst_iter, instrs[i].address, instrs[i].length);
-             dst_iter += instrs[i].length;
+        // Iterate until limit or syscall
+        size_t copied = 0;
+        int i = start_idx;
+        while(copied < before_ecall_size && i < SURROUNDING_INSTRS_NUM) {
+             memcpy(cur_asm_relocation_space, instrs[i].address, instrs[i].length);
+             cur_asm_relocation_space += instrs[i].length;
+             copied += instrs[i].length;
+             i++;
         }
-        cur_asm_relocation_space = dst_iter;
     }
 
 	if (patch->is_ra_used_before)
@@ -566,7 +553,11 @@ relocate_instrs(struct patch_desc *patch)
 	copy_jump(REG_RA, REG_RA, 0);
 
 	/* copy patched instructions after ecall */
-	after_ecall_size = patch_size - before_ecall_size - ECALL_INS_SIZE;
+    if (syscall_in_patch) {
+    	after_ecall_size = patch_size - before_ecall_size - ECALL_INS_SIZE;
+    } else {
+        after_ecall_size = 0;
+    }
 	if (after_ecall_size > 0) {
 		if (patch->is_ra_used_after)
 			load_orig_ra_temp();
@@ -584,6 +575,48 @@ relocate_instrs(struct patch_desc *patch)
 	 * copy jump instruction to return to asm_entry_point
 	 */
 	copy_jump(REG_RA, REG_RA, 0);
+    
+    // For JAL patch where syscall is outside, we have only generated 1 jump so far (Block 1).
+    // asm_entry_point expects Block 1 -> Intercept -> Block 2.
+    // If syscall is outside, we have no Block 2 instructions.
+    // We must generate an EMPTY Block 2 (just a jump back).
+    // The previous copy_jump (above) sets RELOC_ADDR to HERE.
+    // So 'exec_relocated' (Part 2) will start HERE.
+    // We need to jump back to 'finalize'.
+    // If we rely on finalize_and_jump_back being next, we assume RELOC_ADDR points to it.
+    // BUT copy_jump creates a jump instruction.
+    // If Block 2 is empty, we just need the jump.
+    // So if !syscall_in_patch, we need ANOTHER copy_jump.
+    // Wait. copy_jump above IS the Second Jump?
+    // Code flow:
+    // 1. Copy Before (Block 1).
+    // 2. copy_jump (Jump 1).
+    // 3. Copy After (Block 2 logic).
+    // 4. copy_jump (Jump 2).
+    // If syscall_in_patch is false. after_ecall_size is 0.
+    // Copy After does nothing.
+    // Jump 2 is generated.
+    // So we HAVE 2 jumps.
+    // Block 1 -> Jump 1.
+    // Block 2 (Empty) -> Jump 2.
+    // This is correct structure.
+    // So no extra code needed here.
+    // Just verifying my logic.
+    // JAL fstat:
+    // Copy 'li'.
+    // Jump 1. (RELOC -> Next).
+    // After = 0.
+    // Jump 2. (RELOC -> Next/Finalize).
+    // Finalize.
+    // This produces:
+    // [li] [Jump1] [Jump2] [Finalize].
+    // Exec Block 1: Runs li. Jumps back. RELOC -> Jump2.
+    // Exec Block 2: Runs Jump2. Jumps back. RELOC -> Finalize.
+    // Asm Entry: Runs RELOC (Finalize).
+    // Finalize jumps away.
+    // This works properly with asm_entry logic.
+    // So the previous logic was fine, except for underflow.
+    // I will just keep the original copy_jump.
 
 	/* prepare for jump and go back to glibc */
 	finalize_and_jump_back(patch);
@@ -607,6 +640,8 @@ create_patch(struct intercept_desc *desc)
 
 		uint8_t length = check_surrounding_instructions(desc, patch);
 		
+
+
 		// Hybrid Patch Logic: Determine best patch type based on available space.
         int required_complete = 16;
         #ifndef __riscv_c
@@ -648,7 +683,10 @@ create_patch(struct intercept_desc *desc)
         // We must update return_address to match this runtime value,
         // especially if position_patch moved dst_jmp_patch.
         if (patch->syscall_num == TYPE_GP_COMPLETE) {
-            patch->return_address = patch->dst_jmp_patch + 8;
+            // We must jump to the instruction following the patch block.
+            // The Logic inside the patch (Prologue/Call/Epilogue) is bypassed
+            // by the relocation execution mechanism.
+            patch->return_address = patch->dst_jmp_patch + patch->patch_size_bytes;
         }
 
         if (patch->syscall_num != TYPE_IGNORE) {
@@ -720,7 +758,7 @@ copy_GP_COMPLETE(struct patch_desc *patch, uint8_t *trampoline_addr)
     patch->return_address = patch->dst_jmp_patch + instrs_size;
 
 	// Restore logic
-	instrs_size += rvpc_ld(instrs_buff + instrs_size, REG_RA, REG_SP, 0);
+	instrs_size += rvpc_ld(instrs_buff + instrs_size, REG_RA, REG_SP, ORIG_RA_OFF);
 	instrs_size += rvpc_addisp(instrs_buff + instrs_size, PATCH_SP_OFF);
 
 	if (instrs_size > (int)sizeof(instrs_buff))
@@ -791,12 +829,13 @@ copy_JAL(struct patch_desc *patch, uint8_t *trampoline_addr)
     }
 
 	/*
-	 * RISC-V specific: The "relocated instructions" block must end with
-     * a return to the caller (exec_relocated_instructions).
-     * The caller used `jalr ra` to get here, so we must `jalr ra` back.
+	 * JAL patch replaces the original instruction with a jump to trampoline.
+     * The execution flow returns from trampoline (via finalize) to the instruction 
+     * IMMEDIATELY FOLLOWING the patched block.
+     * So we do NOT need a 'ret' here. 
+     * Appending 'ret' would overwrite valid code following the patch.
 	 */
-    // Append 'ret' (jalr zero, ra, 0)
-    instrs_size += rvpc_jalr(instrs_buff + instrs_size, REG_ZERO, REG_RA, 0);
+    // Removed: instrs_size += rvpc_jalr(instrs_buff + instrs_size, REG_ZERO, REG_RA, 0);
 
 	if (instrs_size > (int)sizeof(instrs_buff))
 		xabort(__func__, "copy_JAL buffer overflow");
@@ -807,19 +846,15 @@ copy_JAL(struct patch_desc *patch, uint8_t *trampoline_addr)
 
 /*
  * activate_patches()
- * Loop over all the patches, and overwrite each syscall.
  */
 void
 activate_patches(struct intercept_desc *desc)
 {
-
 	if (desc->count == 0)
 		return;
 
 	// Enable write on code
-	// Align start down to page size
 	uintptr_t start_aligned = (uintptr_t)desc->text_start & ~(PAGE_SIZE - 1);
-	// Align end up (or just ensure size covers everything)
 	uintptr_t end_raw = (uintptr_t)desc->text_end;
 	mprotect_no_intercept((void *)start_aligned, end_raw - start_aligned,
 			PROT_READ | PROT_WRITE | PROT_EXEC, "activate_patches");
@@ -827,31 +862,26 @@ activate_patches(struct intercept_desc *desc)
 	for (unsigned i = 0; i < desc->count; ++i) {
 		struct patch_desc *patch = desc->items + i;
 
-        if (patch->syscall_num == TYPE_IGNORE) continue;
+		if (patch->syscall_num == TYPE_IGNORE)
+			continue;
 
-        if (patch->dst_jmp_patch < desc->text_start || patch->dst_jmp_patch >= desc->text_end) {
-             xabort("activate_patches", "Patch out of bounds");
-        }
-        
+		if (patch->dst_jmp_patch < desc->text_start || patch->dst_jmp_patch >= desc->text_end)
+			xabort("activate_patches", "Patch out of bounds");
 
-
-	     if (patch->syscall_num == TYPE_GP_COMPLETE) {
+		if (patch->syscall_num == TYPE_GP_COMPLETE)
 			copy_GP_COMPLETE(patch, desc->trampoline_address);
-         } else if (patch->syscall_num == TYPE_JAL) {
-            copy_JAL(patch, desc->trampoline_jal_address);
-        } else {
-             xabort("activate_patches", "Unknown patch type");
-        }
+		else if (patch->syscall_num == TYPE_JAL)
+			copy_JAL(patch, desc->trampoline_jal_address);
+		else
+			xabort("activate_patches", "Unknown patch type");
 	}
 
 	// Restore protections and flush cache
 	mprotect_no_intercept((void *)start_aligned, end_raw - start_aligned,
 			PROT_READ | PROT_EXEC, "activate_patches done");
     
-    // flush instructions cache for the modified text segment
+    // flush instructions cache
     syscall_no_intercept(SYS_riscv_flush_icache, (long)start_aligned, (long)end_raw, 0, 0, 0, 0);
-
-    // Also flush the assembly relocation space where trampolines live
     syscall_no_intercept(SYS_riscv_flush_icache, (long)asm_relocation_space, (long)cur_asm_relocation_space, 0, 0, 0, 0);
 }
 

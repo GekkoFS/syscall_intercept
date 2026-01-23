@@ -912,31 +912,17 @@ detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_a
 				int64_t sn = (int64_t)patch->syscall_num;
 				int64_t reloc_addr = (int64_t)patch->relocation_address;
 
+
+
 				switch (sn) {
 				case TYPE_GP_COMPLETE:
 				case TYPE_GP_FAILSAFE:
-                    // Relaxed check: Allow match if found via GW_addr (a2/ra) OR JAL_addr (a3/t0).
-                    // If JAL_addr (t0) matched, we MUST return TYPE_JAL (-6) to tell the wrapper that
-                    // the return address is in RET_ADDR_OFF (16), not UNUSED_OFF1 (32).
-                    // This triggers the .Ljal path which prevents clobbering.
-					if (ra_idx == 2)
+				case TYPE_JAL:
 						return (struct wrapper_ret){sn, reloc_addr};
-                    if (ra_idx == 3)
-                        return (struct wrapper_ret){TYPE_JAL, reloc_addr};
-					break;
                 case TYPE_IGNORE:
-                    // Workaround: Patch found but SN is TYPE_IGNORE (-100).
-                    // If matched via t0, return TYPE_JAL.
-                    if (ra_idx == 3)
-                         return (struct wrapper_ret){TYPE_JAL, reloc_addr};
-                    break;
-                case TYPE_JAL:
-                    if (ra_idx == 3)
-                        return (struct wrapper_ret){sn, reloc_addr};
                     break;
 				default:
-                    // SML/Other types removed
-					break;
+					return (struct wrapper_ret){sn, reloc_addr};
 				}
 				if (ra_idx == 3) {
                     // MatchButTypeFail debug removed

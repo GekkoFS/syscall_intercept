@@ -34,38 +34,8 @@
  * intercept_irq_entry.S -- see doc/RV_doc.md
  */
 
+// offsets (constants) common to both patcher.c and this TU
 #include "patch_offsets.h"
-
-    .macro DEBUG_CHAR char
-        addi sp, sp, -16
-        sd a0, 0(sp)
-        sd a7, 8(sp)
-        li a0, \char
-        sd a0, 16(sp) // store char on stack (out of bounds safeish? no need to alloc buffer)
-        // Wait, 16(sp) is caller frame? create space.
-        
-        li a0, 2 // stderr
-        addi a1, sp, 16 // address of char
-        li a2, 1 // len
-        li a7, 64 // SYS_write
-        ecall
-        
-        ld a0, 0(sp)
-        ld a7, 8(sp)
-        addi sp, sp, 16
-    .endm
-    
-    // Better debug macro that calls a function
-    .macro CALL_DEBUG_MARKER id
-        addi sp, sp, -16
-        sd ra, 8(sp)
-        sd a0, 0(sp)
-        li a0, \id
-        call debug_marker
-        ld a0, 0(sp)
-        ld ra, 8(sp)
-        addi sp, sp, 16
-    .endm
 
 	/* Constants */
 	// relocation space size, increase it if needed
@@ -153,9 +123,6 @@
 		STORE_G	15
 		STORE_G	16
 		STORE_G	17
-		STORE_G	18
-		STORE_G	19
-		STORE_G	20
 		STORE_G	28
 		STORE_G	29
 		STORE_G	30
@@ -203,9 +170,6 @@
 		LOAD_G	15
 		LOAD_G	16
 		LOAD_G	17
-		LOAD_G	18
-		LOAD_G	19
-		LOAD_G	20
 		LOAD_G	28
 		LOAD_G	29
 		LOAD_G	30
@@ -241,29 +205,25 @@
 	 * save the return address and the original ra from a patch.
 	 * MV_TLS_TO_STACK just does the opposite after the execution is done.
 	 */
+	/*
+	 * Before executing the relocated instructions, use MV_STACK_TO_TLS to
+	 * save the return address and the original ra from a patch.
+	 * MV_TLS_TO_STACK just does the opposite after the execution is done.
+	 */
 	.macro MV_STACK_TO_TLS
-		sd	s0, UNUSED_OFF1(sp)
-		sd	s1, UNUSED_OFF2(sp)
-
-		ld	s0, ORIG_RA_OFF(sp)
-		SDSYMT	s0, asm_ra_orig, s1
-		ld	s0, RET_ADDR_OFF(sp)
-		SDSYMT	s0, return_address, s1
-
-		ld	s0, UNUSED_OFF1(sp)
-		ld	s1, UNUSED_OFF2(sp)
+		ld	t1, ORIG_RA_OFF(sp)
+		SDSYMT	t1, asm_ra_orig, t2
+		ld	t1, RET_ADDR_OFF(sp)
+		SDSYMT	t1, return_address, t2
 		addi	sp, sp, PATCH_SP_OFF
 	.endm
+
 	.macro MV_TLS_TO_STACK
 		addi	sp, sp, -PATCH_SP_OFF
-		sd	s0, UNUSED_OFF1(sp)
-
-		LDSYMT	s0, asm_ra_orig
-		sd	s0, ORIG_RA_OFF(sp)
-		LDSYMT	s0, return_address
-		sd	s0, RET_ADDR_OFF(sp)
-
-		ld	s0, UNUSED_OFF1(sp)
+		LDSYMT	t1, asm_ra_orig
+		sd	t1, ORIG_RA_OFF(sp)
+		LDSYMT	t1, return_address
+		sd	t1, RET_ADDR_OFF(sp)
 	.endm
 
 	/*
@@ -272,8 +232,8 @@
 	 * the child process have to be ready immediately after creation.
 	 */
 	.macro MV_STACK_TO_SHR
-		sd	s0, UNUSED_OFF1(sp)
-		sd	s1, UNUSED_OFF2(sp)
+		sd	s0, UNUSED_OFF3(sp)
+		sd	s1, UNUSED_OFF4(sp)
 
 		ld	s0, ORIG_RA_OFF(sp)
 		sd	s0, asm_ra_orig_shr, s1
@@ -282,13 +242,13 @@
 		ld	s0, RELOC_ADDR_OFF(sp)
 		sd	s0, reloc_instrs_addr_shr, s1
 
-		ld	s0, UNUSED_OFF1(sp)
-		ld	s1, UNUSED_OFF2(sp)
+		ld	s0, UNUSED_OFF3(sp)
+		ld	s1, UNUSED_OFF4(sp)
 		addi	sp, sp, PATCH_SP_OFF
 	.endm
 	.macro MV_SHR_TO_STACK
 		addi	sp, sp, -PATCH_SP_OFF
-		sd	s0, UNUSED_OFF1(sp)
+		sd	s0, UNUSED_OFF3(sp)
 
 		ld	s0, asm_ra_orig_shr
 		sd	s0, ORIG_RA_OFF(sp)
@@ -297,7 +257,7 @@
 		ld	s0, reloc_instrs_addr_shr
 		sd	s0, RELOC_ADDR_OFF(sp)
 
-		ld	s0, UNUSED_OFF1(sp)
+		ld	s0, UNUSED_OFF3(sp)
 	.endm
 
 
@@ -347,13 +307,45 @@
 	.hidden	asm_relocation_space
 
 
-	.section .text.irqentry, "ax"
-
+	/* The function where JAL patches jump to */
 	.global	asm_entry_point_jal
 	.hidden	asm_entry_point_jal
 	.type	asm_entry_point_jal, @function
+
+	.section .text.irqentry, "ax"
 asm_entry_point_jal:
 	.cfi_startproc
+	/*
+	 * JAL patches jump here. The return address to the syscall wrapper (PC+4)
+	 * is in ra (or t0, depending on patch).
+	 * GP logic expects ra to be stored in UNUSED_OFF1.
+     * Logic:
+     * 1. Save ra (original return to caller) to ORIG_RA_OFF?
+     *    Wait, JAL does not clobber ra unless we used jalr ra.
+     *    Our JAL patch uses `jal t0` (if we want to save RA?).
+     *    No, `rv_jal` uses a register. `rvp_jump_abs` uses `jalr`.
+     *    Our JAL patch (TYPE_JAL) uses `jal`?
+     *    `create_patch` (Step 18097):
+     *    If JAL: `rvp_jump_GW`? No.
+     *    In `patcher.c` we did NOT see the JAL generation logic?
+     *    Ah, I viewed `create_patch` logic.
+     *    `relocate_instrs` calls `position_patch` then `mark_jump` then `relocate_instrs`.
+     *    `relocate_instrs` calculates `instrs_size`.
+     *    We need to check HOW JAL is generated.
+     *    If it uses `jal zero, trampoline`, then RA is preserved.
+     *    So RA = Wrapper Caller.
+     *    So `ORIG_RA_OFF` should hold valid RA.
+     *    Trampoline (Step 17976 of old trace):
+     *    `asm_entry_point_jal` was:
+     *    `addi sp, -48`. `sd ra, ORIG_RA_OFF`. `sd t0, RET_ADDR_OFF`. `mv ra, t0`.
+     *    This assumes `t0` holds "Return Address inside Wrapper".
+     *    Does `jal` set `t0`?
+     *    If `jal t0, trampoline`. Yes.
+     *    We need to verify if JAL patch uses `jal t0`.
+     *    In `patcher.c` set `patch->return_register = REG_T0`.
+     *    This implies `jal t0`.
+     *    So `t0` holds Wrapper Return Address.
+     */
 	addi	sp, sp, -PATCH_SP_OFF
 	sd	ra, ORIG_RA_OFF(sp)
     sd  t0, RET_ADDR_OFF(sp)
@@ -408,31 +400,18 @@ asm_entry_point:
 	.size	asm_entry_point, . - asm_entry_point
 
 
-/*
- * This messy function lacks a proper prologue and epilogue because sp must retain
- * its original value from glibc before the relocated instructions can be executed.
- */
 exec_relocated_instructions:
 	.cfi_startproc
-    // Safe Prologue: Save ALL caller-saved registers to avoid clobbering by spinlock_aq
-    addi sp, sp, -160
-    sd ra, 0(sp)
-    sd a0, 8(sp)
-    sd a1, 16(sp)
-    sd a2, 24(sp)
-    sd a3, 32(sp)
-    sd a4, 40(sp)
-    sd a5, 48(sp)
-    sd a6, 56(sp)
-    sd a7, 64(sp)
-    sd t0, 72(sp)
-    sd t1, 80(sp)
-    sd t2, 88(sp)
-    sd t3, 96(sp)
-    sd t4, 104(sp)
-    sd t5, 112(sp)
-    sd t6, 120(sp)
+    // Save t3 (scratch) and metadata on our stack
+    sd  t3, UNUSED_OFF3(sp)
+    sd	ra, UNUSED_OFF1(sp)
+    sd	a0, UNUSED_OFF2(sp)
 
+    // 1. Save t1, t2, and current sp to TLS (using t3 as scratch)
+    SDSYMT  t1, asm_t1_orig, t3
+    SDSYMT  t2, asm_t2_orig, t3
+    SDSYMT  sp, asm_sp_save, t3
+    
 	/*
 	 * TLS is used here to save data while executing patched instructions;
 	 * lock it to avoid race conditions or data corruption.
@@ -440,44 +419,20 @@ exec_relocated_instructions:
 	LASYMT	a0, lock_TLS
 	call	spinlock_aq
 
-	// store ra (Entry RA) in reloc_ra_temp
-    // We load it from our safe stack (0(sp))
-    ld ra, 0(sp)
-    // Use t0 as temp register for SDSYMT (safe because we restore t0 later)
-	SDSYMT	ra, reloc_ra_temp, t0
+	// now ra can be stored in reloc_ra_temp before the stack gets deallocated
+	ld	ra, UNUSED_OFF1(sp)
+	SDSYMT	ra, reloc_ra_temp, t3
 
-    // Restore ALL registers
-    ld ra, 0(sp)
-    ld a0, 8(sp)
-    ld a1, 16(sp)
-    ld a2, 24(sp)
-    ld a3, 32(sp)
-    ld a4, 40(sp)
-    ld a5, 48(sp)
-    ld a6, 56(sp)
-    ld a7, 64(sp)
-    ld t0, 72(sp)
-    ld t1, 80(sp)
-    ld t2, 88(sp)
-    ld t3, 96(sp)
-    ld t4, 104(sp)
-    ld t5, 112(sp)
-    ld t6, 120(sp)
-    addi sp, sp, 160
+	// used as an argument with the spinlock, restore to the original value
+	ld	a0, UNUSED_OFF2(sp)
 
-	/*
-	 * Before executing the relocated instructions, sp must be in its original
-	 * state. Before deallocating the stack, important addresses will be
-	 * stored in the TLS section to preserve them (MV_STACK_TO_TLS).
-	 */
-	ld	ra, RELOC_ADDR_OFF(sp)
 	MV_STACK_TO_TLS
+    
+    // 2. Restore t1, t2 for the relocated code (sp is now sp_orig)
+    LDSYMT  t1, asm_t1_orig
+    LDSYMT  t2, asm_t2_orig
 
-	/*
-	 * Jump to the relocated instructions using ra because it is unlikely that
-	 * it will be modified or used there. If it is, a block of instructions
-	 * will be there to aid that (load_orig_ra_temp()/store_new_ra_temp()).
-	 */
+	ld	ra, RELOC_ADDR_OFF(sp)
 	jalr	ra
 
 	/*
@@ -485,24 +440,35 @@ exec_relocated_instructions:
 	 * the next block of relocated instructions. That address will be stored
 	 * on the stack at offset RELOC_ADDR_OFF.
 	 */
-	MV_TLS_TO_STACK
+    
+    // 3. Recover our sp_new from TLS
+    SDSYMT  ra, asm_ra_temp, t1 // t1 is now scratch
+    LDSYMT  sp, asm_sp_save
+    LDSYMT  ra, asm_ra_temp
+    
+    // Now sp is sp_new again.
 	sd	ra, RELOC_ADDR_OFF(sp)
 
-	// load ra from the start of this function
-	LDSYMT	ra, reloc_ra_temp
+	MV_TLS_TO_STACK
 
-	// store ra and a0 on the stack before calling spinlock_rl
-	sd	ra, UNUSED_OFF1(sp)
-	sd	a0, UNUSED_OFF2(sp)
-
-	/* All data is back on the stack, release lock */
-	LASYMT	a0, lock_TLS
-	call	spinlock_rl
-
-	// "epilogue"
+	// Restore ra, a0 for spinlock release
 	ld	ra, UNUSED_OFF1(sp)
+	SDSYMT	ra, reloc_ra_temp, t3
 	ld	a0, UNUSED_OFF2(sp)
+
+	LASYMT	a3, lock_TLS  // Use a3 as scratch for lock address
+    mv      a2, a0        // Save a0 to a2 (using a2 as temp)
+    mv      a0, a3
+	call	spinlock_rl
+    mv      a0, a2        // Restore a0
+    ld      ra, UNUSED_OFF1(sp)
+
+    // 4. Final restore of t1, t2, t3 for the caller
+    LDSYMT  t1, asm_t1_orig
+    LDSYMT  t2, asm_t2_orig
+    ld      t3, UNUSED_OFF3(sp)
 	ret
+
 	.cfi_endproc
 	.size	exec_relocated_instructions, . - exec_relocated_instructions
 
@@ -585,14 +551,14 @@ detect_cur_patch_wrapper:
 	// place a7 in a callee-saved register to preserve it after the call, important to TYPE_SML
 	mv	s1, a7
 
-	/* The table shows where important values are stored by RISC-V patch types
-	 ************************************************************************
-	 * type*    return address     * original ra * note                     *
-	 ************************************************************************
-	 * JAL *   40(s0) (t0 save)    *   UNUSED(s0)* t0 links the return      *
-	 * GP_C*   ORIG_RA_OFF(s0)     *      0(s0)  * ra links via jalr gp     *
-	 * GP_F*   UNUSED_OFF1(s0)     *      0(s0)  * ra saved manually in GOT *
-	 ************************************************************************/
+	/* The table shows where important values are stored by patch types
+	 *********************************************************************
+	 *      *    return address    * original ra *   a7 (ecall) value    *
+	 *********************************************************************
+	 * GW   *   UNUSED_OFF1(sp)    *    0(sp)    *    a7 (unchanged)     *
+	 * MID  *   ORIG_RA_OFF(sp)    *    8(sp)    *    a7 (unchanged)     *
+	 * SML  *         a7           *    0(sp)    *  patch->syscall_num   *
+	 *********************************************************************/
 
 	// a0 will hold TYPE_MID ret addr
 	ld	a0, ORIG_RA_OFF(s0)
@@ -600,7 +566,7 @@ detect_cur_patch_wrapper:
 	mv	a1, a7
 	// a2 will hold TYPE_GW ret addr
 	ld	a2, UNUSED_OFF1(s0)
-    // a3 will hold TYPE_JAL ret addr (loaded from RET_ADDR_OFF, safe from asm_entry_point clobber)
+    // a3 will hold TYPE_JAL ret addr (stored at RET_ADDR_OFF by asm_entry_point_jal)
     ld  a3, RET_ADDR_OFF(s0)
 
 	call	detect_cur_patch
@@ -610,36 +576,18 @@ detect_cur_patch_wrapper:
 	 * a1 = addr of relocated instrs
 	 */
 
-	// store results 
+	// store results (a0 is only relevant to TYPE_SML):
 	sd	a1, RELOC_ADDR_OFF(s0)
 
-    // Check for TYPE_JAL (-6)
-    li t1, -6
-    beq a0, t1, .Ljal
+    // Dispatch based on identified patch type (a0)
+    li  t0, -6 // TYPE_JAL
+    beq a0, t0, .Ldone_final
     
-    // Otherwise assume GP/GW logic (-4, -5, or legacy -2)
-    j .Lgp
-    
-.Lgp:
-	ld	a0, UNUSED_OFF1(s0)
-	sd	a0, RET_ADDR_OFF(s0)
-	j	.Ldone
+    // Generic (GP) patch: Return address is what was in ra upon entry (saved in UNUSED_OFF1)
+    ld  a0, UNUSED_OFF1(s0)
+    sd  a0, RET_ADDR_OFF(s0)
 
-.Ljal:
-    // For TYPE_JAL, RET_ADDR_OFF is already correct.
-    // ORIG_RA_OFF holds original RA (libfabric caller).
-    // Do NOTHING.
-    j .Ldone
-    
-    // For TYPE_JAL (offset -6), we use jal t0.
-    // t0 is saved in RET_ADDR_OFF(s0) by trampoline.
-    // So RET_ADDR_OFF already holds the correct return address.
-    // DO NOT overwrite it with UNUSED_OFF1 (ra), which is garbage.
-    j .Ldone
-
-	SDSP_G	a0, 17
-
-.Ldone:
+.Ldone_final:
 	LOAD_CONTEXT_EPILOGUE
 	ret
 	.cfi_endproc
@@ -695,99 +643,47 @@ intercept_routine_wrapper:
 	ret
 
 .Lunh_clone:	// clones with separate stack space and vfork()
-
-	ld	t0, 80(sp)
-	li	s4, 0
-	beqz	t0, .Lshared_stack
-	
-	// Separate Stack.
-	li	s4, 1
-	ld	t1, ORIG_RA_OFF(s0)
-	ld	t2, RET_ADDR_OFF(s0)
-	ld	t3, RELOC_ADDR_OFF(s0)
-	ld	t4, 152(sp) // App s4
-	
-	addi	t0, t0, -32
-	sd	t1, 0(t0)
-	sd	t2, 8(t0)
-	sd	t3, 16(t0)
-	sd	t4, 24(t0)
-	
-	sd	t0, 80(sp) // Update a1
-	
-.Lshared_stack:
-	LOAD_G	10
-	LOAD_G	11
-	LOAD_G	12
-	LOAD_G	13
-	LOAD_G	14
-	LOAD_G	15
-	LOAD_G	16
-	LOAD_G	17
-	
-	ecall
-	
-	beqz	a0, .Lchild_return
-	
-	// PARENT
-	STORE_CONTEXT_PROLOGUE
-	mv	s0, a0
-	call	intercept_post_clone_log_syscall
-	mv	a0, s0
-	call	intercept_routine_post_clone
+	// restore original context before cloning
 	LOAD_CONTEXT_EPILOGUE
-	ret
-	
-.Lchild_return:
-	// CHILD
-	beqz	s4, .Lchild_shared
-	
-	// Separate Stack
-	ld	t1, 0(sp)
-	ld	t2, 8(sp)
-	ld	t3, 16(sp)
-	ld	s4, 24(sp) // Restore App s4
-	
-	addi	sp, sp, 32 // Pop metadata
-	
-	// Create Frame
+
+	/*
+	 * Execute spinlock_aq before MV_STACK_TO_SHR because multiple threads can
+	 * create new threads, which may lead to contention in the SHR .bss. Being
+	 * outside of LOAD_CONTEXT_EPILOGUE and STORE_CONTEXT_PROLOGUE forces the
+	 * use of extra space available on the stack to store and load ra and a0.
+	 */
+	sd	ra, UNUSED_OFF1(sp)
+	sd	a0, UNUSED_OFF2(sp)
+	la	a0, lock_SHR
+	call	spinlock_aq
+	ld	ra, UNUSED_OFF1(sp)
+	ld	a0, UNUSED_OFF2(sp)
+	// move stack data to SHR .bss for a very independent child (CLONE_SETTLS)
+	MV_STACK_TO_SHR
+
+	ecall
+
+	// move data back from SHR to the stack
+	MV_SHR_TO_STACK
+	// release lock
+	sd	ra, UNUSED_OFF1(sp)
+	sd	a0, UNUSED_OFF2(sp)
+	la	a0, lock_SHR
+	call	spinlock_rl
+	ld	ra, UNUSED_OFF1(sp)
+	ld	a0, UNUSED_OFF2(sp)
+
+	// save again context for each thread before going into C again
 	STORE_CONTEXT_PROLOGUE
-	addi	s0, sp, CONTEXT_SIZE
-	
-	// Fill Frame
-	sd	t1, ORIG_RA_OFF(s0)
-	sd	t2, RET_ADDR_OFF(s0)
-	sd	t3, RELOC_ADDR_OFF(s0)
-	// Frame s4 slot is already filled by STORE_CONTEXT (current s4).
-	// But current s4 is RESTORED value. Which is correct.
-	// Wait, STORE_CONTEXT saves s4.
-	// We loaded App s4 into s4 register BEFORE STORE_CONTEXT?
-	// Yes: `ld s4, 24(sp)`.
-	// Then `STORE_CONTEXT`.
-	// So Frame has App s4. Correct.
-	
-	j .Lchild_header
-	
-.Lchild_shared:
-	// Shared Stack (Fork/Vfork)
-	// We are on (copy of) Parent Stack.
-	// Frame exists. s0 is valid.
-	// Logic is same as Parent essentially.
-	// BUT we need to log as Child.
-	// We might need to save context if we call functions.
-	// Parent path calls STORE_CONTEXT_PROLOGUE.
-	// Child Shared path should too.
-	STORE_CONTEXT_PROLOGUE
-	addi	s0, sp, CONTEXT_SIZE
-	// Metadata is already in Frame (Copy).
-	
-.Lchild_header:
-	// Common Child
-	// Check logging
+	// save a0 for intercept_routine_post_clone
 	mv	s0, a0
+
 	call	intercept_post_clone_log_syscall
+
 	mv	a0, s0
 	call	intercept_routine_post_clone
+
+	// restore context after C functions
 	LOAD_CONTEXT_EPILOGUE
 	ret
 	.cfi_endproc
@@ -795,7 +691,6 @@ intercept_routine_wrapper:
 
 
 asm_relocation_space:
-    .align 3
 	.space	RELOCATION_SIZE, 0
 	.size	asm_relocation_space, . - asm_relocation_space
 
@@ -806,124 +701,7 @@ asm_relocation_space:
 	.hidden	asm_relocation_space_size
 asm_relocation_space_size:
 	.8byte	RELOCATION_SIZE
-
-    .align 2
-    .global debug_marker
-    .type debug_marker, @function
-debug_marker:
-    // a0 holds ID.
-    // Save volatile regs: a0-a7, t0-t6, ra
-    addi sp, sp, -128
-    sd ra, 0(sp)
-    sd a0, 8(sp)
-    sd a1, 16(sp)
-    sd a2, 24(sp)
-    sd a7, 32(sp)
-    
-    // Print "MK: "
-    li a0, 0x203A4B4D // "MK: " (little endian: M(4D) K(4B) :(3A)  (20)) -> 4D 4B 3A 20 wrong order?
-    // "MK: " -> 'M'(0x4d) 'K'(0x4b) ':'(0x3a) ' '(0x20)
-    // Little endian: 0x203A4B4D
-    sd a0, 40(sp)
-    
-    li a0, 2
-    addi a1, sp, 40
-    li a2, 4
-    li a7, 64
-    ecall
-    
-    // Print ID (a0 saved at 8(sp))
-    ld t0, 8(sp) 
-    addi t0, t0, 48 // '0'
-    sd t0, 40(sp)
-    
-    li a0, 2
-    addi a1, sp, 40
-    li a2, 1
-    li a7, 64
-    ecall
-    
-    // Newline
-    li t0, 10
-    sd t0, 40(sp)
-    
-    li a0, 2
-    addi a1, sp, 40
-    li a2, 1
-    li a7, 64
-    ecall
-    
-    // Restore
-    ld ra, 0(sp)
-    ld a0, 8(sp)
-    ld a1, 16(sp)
-    ld a2, 24(sp)
-    ld a7, 32(sp)
-    addi sp, sp, 128
-    .align 2
-    .global debug_val_printer
-    .type debug_val_printer, @function
-debug_val_printer:
-    // a0 is value. print hex.
-    addi sp, sp, -32
-    sd ra, 0(sp)
-    sd s0, 8(sp)
-    
-    mv s0, a0
-    
-    // Print prefix " V:"
-    li a0, 2
-    addi sp, sp, -8
-    li t0, 0x3A5620 // " V:"
-    sd t0, 0(sp)
-    addi a1, sp, 0
-    li a2, 3
-    li a7, 64
-    ecall
-    addi sp, sp, 8
-    
-    // Loop 16 nibbles
-    li t0, 16
-1:
-    addi t0, t0, -1
-    srl t1, s0, 60 // top 4 bits
-    slli s0, s0, 4 // shift
-    
-    li t2, 9
-    ble t1, t2, 2f
-    addi t1, t1, 7 // A-F
-2:
-    addi t1, t1, 48 // 0-9
-    
-    // print char
-    addi sp, sp, -8
-    sd t1, 0(sp)
-    li a0, 2
-    addi a1, sp, 0
-    li a2, 1
-    li a7, 64
-    ecall
-    addi sp, sp, 8
-    
-    bnez t0, 1b
-    
-    // newline
-    addi sp, sp, -8
-    li t1, 10
-    sd t1, 0(sp)
-    li a0, 2
-    addi a1, sp, 0
-    li a2, 1
-    li a7, 64
-    ecall
-    addi sp, sp, 8
-    
-    ld ra, 0(sp)
-    ld s0, 8(sp)
-    addi sp, sp, 32
-    ret
-    .size debug_val_printer, . - debug_val_printer
-    /*
+	/*
 	 * Natural alignment (alignment follows the symbol size) is crucial for
 	 * atomic instructions. Misalignment causes the address-misaligned or
 	 * access-fault exception. Also, misaligned LR/SC sequences also raise
@@ -967,6 +745,18 @@ lock_TLS:
 	.local	reloc_ra_temp
 asm_ra_orig:
 	.zero	8
+asm_t1_orig:
+	.zero	8
+asm_t2_orig:
+	.zero	8
+asm_sp_save:
+	.zero	8
+	.global	asm_t1_orig
+	.hidden	asm_t1_orig
+	.global	asm_t2_orig
+	.hidden	asm_t2_orig
+	.global	asm_sp_save
+	.hidden	asm_sp_save
 asm_ra_temp:
 	.zero	8
 return_address:

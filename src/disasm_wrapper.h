@@ -67,6 +67,7 @@ struct intercept_disasm_result {
 	bool is_abs_jump;
 	bool is_ret;
     bool is_auipc;
+    bool is_sp_modified;
 
 	const unsigned char *rip_ref_addr;
 
