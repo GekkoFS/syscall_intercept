@@ -274,8 +274,8 @@ find_jumps_in_section_syms(struct intercept_desc *desc, Elf64_Shdr *section,
 		if (syms[i].st_shndx != desc->text_section_index)
 			continue; /* it is not in the text section */
 
-		debug_dump("jump target: %lx\n",
-		    (unsigned long)syms[i].st_value);
+//		debug_dump("jump target: %lx\n",
+//		    (unsigned long)syms[i].st_value);
 
 		unsigned char *address = desc->base_addr + syms[i].st_value;
 
@@ -320,11 +320,11 @@ find_jumps_in_section_rela(struct intercept_desc *desc, Elf64_Shdr *section,
 	for (size_t i = 0; i < sym_count; ++i) {
 		switch (ELF64_R_TYPE(syms[i].r_info)) {
 			case R_X86_64_RELATIVE:
-			case R_X86_64_RELATIVE64:
+			case R_X86_64_RELATIVE64:;
 				/* Relocation type: "Adjust by program base" */
 
-				debug_dump("jump target: %lx\n",
-				    (unsigned long)syms[i].r_addend);
+				// // debug_dump("jump target: %lx\n",
+				// //     (unsigned long)syms[i].r_addend);
 
 				unsigned char *address =
 				    desc->base_addr + syms[i].r_addend;
@@ -544,7 +544,6 @@ fill_up_patch(struct intercept_desc *desc, struct patch_desc *patch,
 		else if (surr[i].is_a7_modified)
 			syscall_num = -1;
 	}
-
     if (syscall_num == 139) {
         // rt_sigreturn (139)
         // Explicitly IGNORE to skip patching
@@ -698,7 +697,6 @@ find_syscalls(struct intercept_desc *desc)
 	desc->count = 0;
 
 	int fd = open_orig_file(desc);
-
 	find_sections(desc, fd);
 	debug_dump(
 	    "%s .text mapped at 0x%016" PRIxPTR " - 0x%016" PRIxPTR " \n",

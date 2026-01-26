@@ -43,7 +43,7 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
-// #define DEBUG 1
+#define DEBUG 1
 #include <assert.h>
 #include <stdbool.h>
 #include <elf.h>
@@ -433,11 +433,16 @@ should_patch_object(uintptr_t addr, const char *path)
 		return true;
 
 	if (str_match(name, len, pthr)) {
-		debug_dump(" - libpthread found\n");
+//		debug_dump(" - libpthread found\n");
 		return true;
 	}
+    
+//    char buf[256];
+//    int l = snprintf(buf, sizeof(buf), " - skipping: %s\n", name);
+//    (void)l;
+//    debug_dump(buf);
 
-	debug_dump(" - skipping, patch_all_objs == false\n");
+//	debug_dump(" - skipping, patch_all_objs == false\n");
 	return false;
 }
 
@@ -675,11 +680,17 @@ compare_patches(const void *a, const void *b)
 	return 0;
 }
 
+// static __attribute__((constructor)) void
 static __attribute__((constructor)) void
-intercept(int argc, char **argv)
+intercept(int argc, char **argv, char **envp)
 {
-	(void) argc;
-    cmdline = argv[0];
+    // cmdline = argv[0];
+    if (argc > 0 && argv != NULL)
+        cmdline = argv[0];
+    else
+        cmdline = "unknown";
+    (void) envp;
+
     static bool init_done = false;
 	char *path = NULL;
 	extern void init_patcher(long page_size);
@@ -887,54 +898,51 @@ binary_search(const struct patch_desc *items, uint32_t count, uint64_t ret_addr)
 static int64_t
 binary_search_fuzzy(const struct patch_desc *items, uint32_t count, uint64_t ret_addr);
 
-__attribute__((section(".text.irqentry"), used)) struct wrapper_ret
+__attribute__((section(".text.irqentry"), used)) const struct patch_desc *
 detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_addr, uint64_t JAL_ret_addr)
 {
     
     const uint64_t check_ret_addrs[4] = {MID_ret_addr, SML_ret_addr, GW_ret_addr, JAL_ret_addr};
 
-    int bounds_found = 0;
 	for (uint8_t ra_idx = 0; ra_idx < (sizeof(check_ret_addrs) / sizeof(check_ret_addrs[0])); ++ra_idx) {
 		uint64_t ra = check_ret_addrs[ra_idx];
 		for (uint32_t o = 0; o < objs_count; ++o) {
 			// check if current obj contains the return address
 			if (ra < (uint64_t)objs[o].text_start || ra > (uint64_t)objs[o].text_end)
 				continue;
-            
-            // Debug bounds hit
-            if (ra_idx == 3) { // Only for JAL
-                 bounds_found = 1;
-            }
 
 			int64_t match_idx = binary_search_fuzzy(objs[o].items, objs[o].count, ra);
 			if (match_idx >= 0) {
 				const struct patch_desc *patch = objs[o].items + match_idx;
 				int64_t sn = (int64_t)patch->syscall_num;
-				int64_t reloc_addr = (int64_t)patch->relocation_address;
+				// int64_t reloc_addr = (int64_t)patch->relocation_address;
 
-
+                if (sn == 43 || sn == -6) {
+                     // Debug logic removed
+                }
 
 				switch (sn) {
 				case TYPE_GP_COMPLETE:
 				case TYPE_GP_FAILSAFE:
 				case TYPE_JAL:
-						return (struct wrapper_ret){sn, reloc_addr};
+                        {
+                            // Debug logic removed
+                        }
+						return patch;
                 case TYPE_IGNORE:
                     break;
 				default:
-					return (struct wrapper_ret){sn, reloc_addr};
+                    {
+                            // Debug logic removed
+                    }
+					return patch;
 				}
-				if (ra_idx == 3) {
-                    // MatchButTypeFail debug removed
-                }
 			 break;
 		} else {
              // SearchFail debug removed
         }
 	}
 	}
-    
-    if (!bounds_found) { /* NoBoundsMatch debug removed */ }
 	
 	xabort(__func__, "failed to identify patch");
 }
@@ -1220,4 +1228,18 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		intercept_log_syscall(patch, &desc, KNOWN, result_safe.a0);
 
 	return (struct wrapper_ret){.a0 = result_safe.a0, .a1 = a1};
+}
+
+void print_debug_asm(void *ptr) {
+    if (!ptr) {
+         syscall_no_intercept(SYS_write, 2, "ASM: NULL PTR\n", 14, 0, 0, 0);
+         return;
+    }
+    long *p = (long*)ptr;
+    long val0 = p[0]; // return_address
+    long val1 = p[1]; // relocation_address (offset 8)
+    
+    char msg[128];
+    int l = snprintf(msg, sizeof(msg), "ASM: ptr=%p off0=%lx off8=%lx\n", ptr, val0, val1);
+    syscall_no_intercept(SYS_write, 2, msg, l, 0, 0, 0);
 }

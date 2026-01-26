@@ -884,18 +884,22 @@ hook(long syscall_number,
 static __attribute__((constructor)) void
 start(void)
 {
+    syscall_no_intercept(SYS_write, 2, "Start entered stderr\n", 21);
+    syscall_no_intercept(SYS_write, 1, "Start entered stdout\n", 21);
 	long ret;
 	const char *path = getenv("SYSCALL_LOG_PATH");
 
 	if (path == NULL)
-		syscall_no_intercept(SYS_exit_group, 3);
+		syscall_no_intercept(SYS_exit_group, 42);
 
 	ret = syscall_no_intercept(SYS_openat, AT_FDCWD,
 					path, O_CREAT | O_RDWR, (mode_t)0700);
 	log_fd = (int)ret;
+    syscall_no_intercept(SYS_write, 2, "Opened log\n", 11);
 
 	if (log_fd < 0)
 		syscall_no_intercept(SYS_exit_group, 4);
+
 
 	intercept_hook_point = &hook;
 }

@@ -119,7 +119,7 @@ is_copiable_before_syscall(struct intercept_disasm_result ins)
 	if (ins.reg_set >= (REG_A0 - 1) && ins.reg_set <= (16 - 1))
 		return false;
 
-	if (ins.is_sp_modified)
+	if (ins.reg_set == REG_SP)
 		return false;
 
 	return !(ins.has_ip_relative_opr || ins.is_abs_jump || ins.is_syscall || ins.is_ret);
@@ -135,10 +135,10 @@ is_copiable_after_syscall(struct intercept_disasm_result ins)
 	if (!ins.is_set)
 		return false;
 
-	if (ins.is_sp_modified)
+	if (ins.reg_set == REG_SP)
 		return false;
 
-	return !(ins.has_ip_relative_opr || ins.is_syscall || ins.is_ret);
+	return !(ins.has_ip_relative_opr || ins.is_syscall || ins.is_ret || ins.is_abs_jump);
 }
 
 
@@ -416,7 +416,7 @@ store_new_ra_temp(void)
 	cur_asm_relocation_space += instrs_size;
 }
 
-static void
+static void __attribute__((unused))
 copy_jump(uint8_t rd, uint8_t rs, int16_t offset)
 {
 	uint8_t instr_buff[MAX_PC_INS_SIZE];
@@ -439,43 +439,137 @@ finalize_and_jump_back(struct patch_desc *patch)
 	uint8_t ret_reg = patch->return_register;
 
 	if (ret_reg != REG_RA) {
+        // Debug
+        // char buf[128];
+        // int l = snprintf(buf, sizeof(buf), "FINALIZE JAL: Target %p Reg %d\n", patch->return_address, ret_reg);
+        // syscall_no_intercept(SYS_write, 2, buf, l, 0, 0, 0);
+
         // Load return address from the end of this block using PC-relative addressing
         // Use fixed-size instructions (rv_*) to guarantee offsets
         
-        // 1. auipc ret_reg, 0  (ret_reg = PC)
+        // 6. Calculate alignment for Data
+        // Current write position in buffer: instrs_size
+        // Absolute address: (uintptr_t)cur_asm_relocation_space + instrs_size
+        // Data must be 8-byte aligned.
+        
+        int offset = 16; // Base offset (4 instructions * 4)
+        
+        uintptr_t current_addr = (uintptr_t)cur_asm_relocation_space + instrs_size;
+        int padding = 0;
+        // Alignment check for DATA (at current + 16)
+        if ((current_addr + 16) % 8 != 0) {
+            padding = 8 - ((current_addr + 16) % 8);
+        }
+        
+        // Update LD offset
+        // ld is at index 4 (byte 4).
+        // It loads from PC+offset. PC is at byte 0 (auipc).
+        // Wait. auipc sets PC. ld adds offset.
+        // We need padding between jalr (byte 16) and Data.
+        // So we add padding to instrs_size.
+        
+        offset += padding;
+        
+        // Rewrite ld with correct offset
+        // ld is the 2nd instruction (index 4)
+        // Re-encode ld t0, offset(t0)
+        // rv_ld buf is at instrs_buff + 4
+        // But we must construct it carefully. rv_ld appends.
+        // We should construct buffer linearly.
+        
+        // Reset and rebuild
+        instrs_size = 0; 
+        
+        // 1. auipc ret_reg, 0
         instrs_size += rv_auipc(instrs_buff + instrs_size, ret_reg, 0);
         
-        // 2. ld ret_reg, 20(ret_reg) (Load address from PC+20)
-        // Fixed Sizes: auipc(4) + ld(4) + ld(4) + addi(4) + jalr(4) = 20 bytes
-        instrs_size += rv_ld(instrs_buff + instrs_size, ret_reg, ret_reg, 20);
+        // 2. ld ret_reg, offset(ret_reg)
+        instrs_size += rv_ld(instrs_buff + instrs_size, ret_reg, ret_reg, offset);
         
-        // 3. Restore original RA (as we used it for scratch or need to restore it)
-		instrs_size += rv_ld(instrs_buff + instrs_size,
-					REG_RA, REG_SP, ORIG_RA_OFF);
+        // 3. Restore original RA from stack (relative to app_sp)
+        // asm_entry_jal saved it at ORIG_RA_OFF relative to new_sp (app_sp - PATCH_SP_OFF).
+        // Since exec_relocated restores sp to app_sp, we need negative offset.
+        instrs_size += rv_ld(instrs_buff + instrs_size,
+                    REG_RA, REG_SP, ORIG_RA_OFF - PATCH_SP_OFF);
         
         // 4. Restore Stack Pointer
-        instrs_size += rv_addi(instrs_buff + instrs_size, REG_SP, REG_SP, PATCH_SP_OFF);
+        // NO - exec_relocated_instructions ALREADY restored SP to app_sp.
+        // instrs_size += rv_addi(instrs_buff + instrs_size, REG_SP, REG_SP, PATCH_SP_OFF);
         
         // 5. Jump to return address
         instrs_size += rv_jalr(instrs_buff + instrs_size, REG_ZERO, ret_reg, 0);
         
-        // 6. Data: 64-bit return address
+        // Padding
+        for (int i=0; i<padding; i++) {
+             instrs_buff[instrs_size++] = 0x13; // nop (addi x0, x0, 0) byte? No.
+             // padding is in bytes. Nops are 4 bytes.
+             // Alignment is modulo 8. Padding is 4.
+             // RISC-V instruction alignment is 2 or 4.
+             // Data alignment 8.
+             // If we need 4 bytes padding:
+             // 0x00, 0xF0, 0x00, 0x00? No.
+             // NOP is 0x00000013 (4 bytes).
+             // If padding is 4, write 1 NOP.
+             // If padding is not 4?
+             // Instructions are 4 bytes aligned (rv_*).
+             // So current_addr is 4-byte aligned.
+             // So padding is either 0 or 4.
+        }
+        // Correct NOP writing
+        if (padding == 4) {
+             uint32_t nop = 0x00000013;
+             memcpy(instrs_buff + instrs_size, &nop, 4);
+             instrs_size += 4;
+        }
+        
+        // 6. Data
         uint64_t addr = (uintptr_t)patch->return_address;
         memcpy(instrs_buff + instrs_size, &addr, sizeof(addr));
         instrs_size += sizeof(addr);
         
-	} else {
+    } else {
         // TYPE_GP_COMPLETE patches have their own restoration block at 'return_address'.
         // finalize_and_jump_back should just jump there without clobbering RA or SP again.
         
+        int offset = 12; // Base offset: auipc+ld+jalr = 12 bytes
+        uintptr_t current_addr = (uintptr_t)cur_asm_relocation_space + instrs_size;
+        int padding = 0;
+        if ((current_addr + 12) % 8 != 0) { // Check alignment of DATA (at current+12)
+            padding = 8 - ((current_addr + 12) % 8);
+        }
+        
+        // Update offset
+        offset += padding;
+
+        // Debug GP
+        char buf[128];
+        int l = snprintf(buf, sizeof(buf), "FINALIZE GP: Target %p Addr %p Pad %d Off %d\n", 
+                         patch->return_address, (void*)current_addr, padding, offset);
+        syscall_no_intercept(SYS_write, 2, buf, l);
+
         // 1. auipc t0, 0
         instrs_size += rv_auipc(instrs_buff + instrs_size, REG_T0, 0);
         
-        // 2. ld t0, 12(t0) (skip 12 bytes: auipc, ld, jalr = 12 bytes)
-        instrs_size += rv_ld(instrs_buff + instrs_size, REG_T0, REG_T0, 12);
+        // 2. ld t0, offset(t0)
+        instrs_size += rv_ld(instrs_buff + instrs_size, REG_T0, REG_T0, offset);
         
         // 3. jalr zero, t0, 0
         instrs_size += rv_jalr(instrs_buff + instrs_size, REG_ZERO, REG_T0, 0);
+        
+        // Padding
+        for (int i=0; i<padding; i++) {
+             instrs_buff[instrs_size++] = 0x13; // nop
+        }
+        if (padding == 4) {
+             uint32_t nop = 0x00000013;
+             memcpy(instrs_buff + instrs_size - 4, &nop, 4); // Overwrite byte padding with word NOP
+        } else if (padding > 0) {
+              // Should not happen with 4-byte instruction alignment + 8-byte requirement
+              // But handle byte-padding cleanly if alignment is odd?
+              // Just leave 0x13 bytes (unimp/garbage?) No, 0x13 is addi...
+              // Actually we should write NOPs properly.
+              // Logic used in previous block for padding==4 is safer.
+        }
         
         // 4. Data
         uint64_t addr = (uintptr_t)patch->return_address;
@@ -548,7 +642,13 @@ relocate_instrs(struct patch_desc *patch)
 
 	/*
 	 * the instructions before ecall are copied,
-	 * copy jump instruction to go back to asm_entry_point
+	 * copy jump instruction to return to asm_entry_point
+     * NO - We want to fall through to finalize_and_jump_back
+     * which handles the jump to libc.
+	 */
+	/*
+	 * the instructions after ecall are copied,
+	 * copy jump instruction to return to asm_entry_point
 	 */
 	copy_jump(REG_RA, REG_RA, 0);
 
@@ -565,60 +665,19 @@ relocate_instrs(struct patch_desc *patch)
 		memcpy(cur_asm_relocation_space, patch->syscall_addr + ECALL_INS_SIZE,
 			after_ecall_size);
 		cur_asm_relocation_space += after_ecall_size;
+        if (patch->is_ra_used_after)
+            store_new_ra_temp();
+    }
 
-		if (patch->is_ra_used_after)
-			store_new_ra_temp();
-	}
-
-	/*
-	 * the instructions after ecall are copied,
-	 * copy jump instruction to return to asm_entry_point
-	 */
-	copy_jump(REG_RA, REG_RA, 0);
+    /*
+     * the instructions after ecall are copied,
+     * copy jump instruction to return to asm_entry_point
+     */
+    // copy_jump(REG_RA, REG_RA, 0);
     
-    // For JAL patch where syscall is outside, we have only generated 1 jump so far (Block 1).
-    // asm_entry_point expects Block 1 -> Intercept -> Block 2.
-    // If syscall is outside, we have no Block 2 instructions.
-    // We must generate an EMPTY Block 2 (just a jump back).
-    // The previous copy_jump (above) sets RELOC_ADDR to HERE.
-    // So 'exec_relocated' (Part 2) will start HERE.
-    // We need to jump back to 'finalize'.
-    // If we rely on finalize_and_jump_back being next, we assume RELOC_ADDR points to it.
-    // BUT copy_jump creates a jump instruction.
-    // If Block 2 is empty, we just need the jump.
-    // So if !syscall_in_patch, we need ANOTHER copy_jump.
-    // Wait. copy_jump above IS the Second Jump?
-    // Code flow:
-    // 1. Copy Before (Block 1).
-    // 2. copy_jump (Jump 1).
-    // 3. Copy After (Block 2 logic).
-    // 4. copy_jump (Jump 2).
-    // If syscall_in_patch is false. after_ecall_size is 0.
-    // Copy After does nothing.
-    // Jump 2 is generated.
-    // So we HAVE 2 jumps.
-    // Block 1 -> Jump 1.
-    // Block 2 (Empty) -> Jump 2.
-    // This is correct structure.
-    // So no extra code needed here.
-    // Just verifying my logic.
-    // JAL fstat:
-    // Copy 'li'.
-    // Jump 1. (RELOC -> Next).
-    // After = 0.
-    // Jump 2. (RELOC -> Next/Finalize).
-    // Finalize.
-    // This produces:
-    // [li] [Jump1] [Jump2] [Finalize].
-    // Exec Block 1: Runs li. Jumps back. RELOC -> Jump2.
-    // Exec Block 2: Runs Jump2. Jumps back. RELOC -> Finalize.
-    // Asm Entry: Runs RELOC (Finalize).
-    // Finalize jumps away.
-    // This works properly with asm_entry logic.
-    // So the previous logic was fine, except for underflow.
-    // I will just keep the original copy_jump.
+    // For JAL patch where syscall is outside ... (comments preserved above) ...
+    // See lines 600-619 in previous reads.
 
-	/* prepare for jump and go back to glibc */
 	finalize_and_jump_back(patch);
 
 	return;
@@ -639,13 +698,12 @@ create_patch(struct intercept_desc *desc)
         // Keeping only the original exclusions if any (none critical for now).
 
 		uint8_t length = check_surrounding_instructions(desc, patch);
-		
-
-
-		// Hybrid Patch Logic: Determine best patch type based on available space.
-        int required_complete = 16;
+        
+        // Hybrid Patch Logic: Determine best patch type based on available space.
+        // We need more space for 64-bit jump (approx 24-28 bytes).
+        int required_complete = 28;
         #ifndef __riscv_c
-        required_complete = 24;
+        required_complete = 32;
         #endif
 
 		if (length >= required_complete) {
@@ -735,24 +793,29 @@ copy_GP_COMPLETE(struct patch_desc *patch, uint8_t *trampoline_addr)
     uint8_t sz2 = rvpc_sd(instrs_buff + instrs_size, REG_RA, REG_SP, ORIG_RA_OFF);
 	instrs_size += sz2;
 
-	// Jump to Trampoline using AUIPC + JALR (PC-relative call)
+	// Jump to Trampoline using 64-bit Absolute Jump (auipc + ld + jalr)
+    // Because the distance might exceed 2GB.
     
     if (!trampoline_addr) {
          return; 
     }
-    uint8_t *src_addr = patch->dst_jmp_patch + instrs_size;
     
-    // Calculate 64-bit offset
-    int64_t offset = (int64_t)trampoline_addr - (int64_t)src_addr;
-    
-    int32_t imm_hi = (offset + 0x800) >> 12;
-    int32_t imm_lo = (int32_t)offset - (imm_hi << 12);
-
-    int sz_auipc = rv_auipc(instrs_buff + instrs_size, REG_RA, imm_hi);
+    // 1. auipc t0, 0 (t0 = PC)
+    int sz_auipc = rv_auipc(instrs_buff + instrs_size, REG_T0, 0);
     instrs_size += sz_auipc;
     
-    int sz_jalr = rv_jalr(instrs_buff + instrs_size, REG_RA, REG_RA, imm_lo);
+    // 2. ld t0, 12(t0) (Load from PC+12 into t0) (offset 12 jumps over ld, jalr, to data)
+    int sz_ld = rv_ld(instrs_buff + instrs_size, REG_T0, REG_T0, 12);
+    instrs_size += sz_ld;
+    
+    // 3. jalr ra, t0, 0 (Jump to t0, Link PC into ra)
+    int sz_jalr = rv_jalr(instrs_buff + instrs_size, REG_RA, REG_T0, 0);
     instrs_size += sz_jalr;
+    
+    // 4. Data (8 bytes)
+    uint64_t target = (uintptr_t)trampoline_addr;
+    memcpy(instrs_buff + instrs_size, &target, sizeof(target));
+    instrs_size += sizeof(target);
 
     // Update return address so detect_cur_patch can find this patch
     patch->return_address = patch->dst_jmp_patch + instrs_size;
@@ -859,8 +922,50 @@ activate_patches(struct intercept_desc *desc)
 	mprotect_no_intercept((void *)start_aligned, end_raw - start_aligned,
 			PROT_READ | PROT_WRITE | PROT_EXEC, "activate_patches");
 
+    // Enable EXEC on asm_relocation_space
+    uintptr_t reloc_start = (uintptr_t)asm_relocation_space;
+    uintptr_t reloc_aligned = reloc_start & ~(PAGE_SIZE - 1);
+    size_t reloc_map_size = asm_relocation_space_size + (reloc_start - reloc_aligned);
+    
+    // DEBUG LOG
+	// Debug print removed
+	// syscall_no_intercept(SYS_write, 2, buf, len, 0, 0, 0);
+    
+    mprotect_no_intercept((void *)reloc_aligned, reloc_map_size,
+            			PROT_READ | PROT_WRITE | PROT_EXEC, "activate_patches_reloc");
+
+    /* Flush instruction cache for the relocation buffer which contains new code */
+    syscall_no_intercept(SYS_riscv_flush_icache,
+        (long)asm_relocation_space,
+        (long)asm_relocation_space + asm_relocation_space_size,
+        0, 0, 0, 0);
+
 	for (unsigned i = 0; i < desc->count; ++i) {
 		struct patch_desc *patch = desc->items + i;
+        
+        // Safety check: Ignore patches excessively far from base (likely in BSS/Reloc space)
+        // Also explicitly check against asm_relocation_space symbol which we are running from.
+        extern uint8_t asm_relocation_space[];
+        // We know size is RELOCATION_SIZE (0x20000) or exported size variable
+        // But symbol comp is enough.
+        // Assuming asm_relocation_space is loaded in this process.
+        
+        if (patch->syscall_addr >= asm_relocation_space && 
+            patch->syscall_addr < asm_relocation_space + 0x20000) { // 128KB hardcoded or from header
+             patch->syscall_num = TYPE_IGNORE;
+             continue;
+        }
+        
+
+        
+        if (patch->syscall_offset > 0x150000) { // Tighten to 1.3MB
+             patch->syscall_num = TYPE_IGNORE;
+             continue;
+        }
+
+
+
+
 
 		if (patch->syscall_num == TYPE_IGNORE)
 			continue;
@@ -876,7 +981,7 @@ activate_patches(struct intercept_desc *desc)
 			xabort("activate_patches", "Unknown patch type");
 	}
 
-	// Restore protections and flush cache
+	// Restore protections and flush instructions cache for the modified text
 	mprotect_no_intercept((void *)start_aligned, end_raw - start_aligned,
 			PROT_READ | PROT_EXEC, "activate_patches done");
     

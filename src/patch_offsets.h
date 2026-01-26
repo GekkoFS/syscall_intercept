@@ -5,7 +5,7 @@
  * relocated instructions, sp is increased by this constant to restore the
  * original value. All other offsets refer to this sp.
  */
-#define PATCH_SP_OFF	2000
+#define PATCH_SP_OFF	128
 /*
  * Low offsets to maximize headroom for application stack frames.
  */
@@ -15,6 +15,8 @@
 #define RELOC_ADDR_OFF	24
 #define UNUSED_OFF1	32
 #define UNUSED_OFF2	40
+#define UNUSED_OFF3	48
+#define UNUSED_OFF4	56
 #define UNUSED_OFF3	48
 #define UNUSED_OFF4	56
 // t1 and t2 preservation slots

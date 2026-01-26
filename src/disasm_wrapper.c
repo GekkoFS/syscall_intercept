@@ -310,6 +310,18 @@ intercept_disasm_next_instruction(struct intercept_disasm_context *context,
 	result.has_ip_relative_opr |= (context->insn->id == RISCV_INS_AUIPC);
     result.is_auipc = (context->insn->id == RISCV_INS_AUIPC);
 	result.is_syscall = (context->insn->id == RISCV_INS_ECALL);
+    
+    // Fallback: Check mnemonic for ret/c.ret/jr/c.jr if group detection fails
+    const char *mnem = context->insn->mnemonic;
+    // DEBUG LOG
+    
+    if (mnem) {
+        // Use strstr for robustness against trailing spaces or variations
+        if (strstr(mnem, "ret") || strstr(mnem, "jr") || strstr(mnem, "break")) {
+            result.is_ret = true; // Treat as return/boundary
+            result.is_abs_jump = true;
+        }
+    }
 
 #ifndef NDEBUG
 	// Mnemonic removed

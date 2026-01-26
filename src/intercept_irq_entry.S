@@ -416,24 +416,33 @@ exec_relocated_instructions:
 	 * TLS is used here to save data while executing patched instructions;
 	 * lock it to avoid race conditions or data corruption.
 	 */
-	LASYMT	a0, lock_TLS
-	call	spinlock_aq
+	/*
+	 * TLS is used here to save data while executing patched instructions;
+	 * Locking is NOT required for TLS access (per-thread).
+	 */
 
 	// now ra can be stored in reloc_ra_temp before the stack gets deallocated
 	ld	ra, UNUSED_OFF1(sp)
-	SDSYMT	ra, reloc_ra_temp, t3
-
 	// used as an argument with the spinlock, restore to the original value
-	ld	a0, UNUSED_OFF2(sp)
+	// ld	a0, UNUSED_OFF2(sp)
 
-	MV_STACK_TO_TLS
+    // Unnecessary to move s1 to ra. We jump to S1 directly.
+    // Preserving ra is crucial for patched code that relies on it. 
+    
+    // Manually restore stack (replacing MV_STACK_TO_TLS)
+    addi sp, sp, PATCH_SP_OFF
     
     // 2. Restore t1, t2 for the relocated code (sp is now sp_orig)
     LDSYMT  t1, asm_t1_orig
     LDSYMT  t2, asm_t2_orig
 
-	ld	ra, RELOC_ADDR_OFF(sp)
-	jalr	ra
+	// Move reloc address to t0
+    mv t0, s1
+    // Restore original s1 (saved in UNUSED_OFF4 by detect_wrapper)
+    ld s1, UNUSED_OFF4(sp)
+    
+    // Jump to relocation address (t0)
+    jr t0
 
 	/*
 	 * After executing the relocated instructions, ra holds the address of
@@ -451,17 +460,9 @@ exec_relocated_instructions:
 
 	MV_TLS_TO_STACK
 
-	// Restore ra, a0 for spinlock release
+	// Restore ra, a0 (previously used for spinlock release)
 	ld	ra, UNUSED_OFF1(sp)
-	SDSYMT	ra, reloc_ra_temp, t3
 	ld	a0, UNUSED_OFF2(sp)
-
-	LASYMT	a3, lock_TLS  // Use a3 as scratch for lock address
-    mv      a2, a0        // Save a0 to a2 (using a2 as temp)
-    mv      a0, a3
-	call	spinlock_rl
-    mv      a0, a2        // Restore a0
-    ld      ra, UNUSED_OFF1(sp)
 
     // 4. Final restore of t1, t2, t3 for the caller
     LDSYMT  t1, asm_t1_orig
@@ -572,19 +573,47 @@ detect_cur_patch_wrapper:
 	call	detect_cur_patch
 	/*
 	 * Returns:
-	 * a0 = patch type/syscall_num
-	 * a1 = addr of relocated instrs
+	 * a0 = struct patch_desc *
 	 */
+    
+    // Save pointer to t0 (scratch) because we need a0 for syscall_num later
+    mv t0, a0
+    
+    // Load relocation_address (offset 8) into a1
+    ld a1, 8(t0)
 
 	// store results (a0 is only relevant to TYPE_SML):
-	sd	a1, RELOC_ADDR_OFF(s0)
-
-    // Dispatch based on identified patch type (a0)
-    li  t0, -6 // TYPE_JAL
-    beq a0, t0, .Ldone_final
+	// sd	a1, RELOC_ADDR_OFF(s0)
     
-    // Generic (GP) patch: Return address is what was in ra upon entry (saved in UNUSED_OFF1)
+    // Preserve Original S1 (at 64(sp) = stored by STORE_CONTEXT)
+    // Save it to UNUSED_OFF4 of the PARENT frame (s0 is parent sp? No, s0=sp+CONTEXT)
+    // s0 = sp + CONTEXT_SIZE
+    ld t0, 64(sp)
+    sd t0, UNUSED_OFF4(s0)
+    
+    // BYPASS: Write to saved S1 slot (offset 64)
+    // s1 (x9) is stored at (9-1)*8 = 64(sp)
+    sd a1, 64(sp)
+    
+    # Load syscall_num (offset 16) into a0 (int16_t)
+    lh a0, 16(t0)
+
+    # Dispatch based on identified patch type (a0)
+    li  t0, -6 # TYPE_JAL
+    beq a0, t0, .Lprocess_jal
+    
+    # Generic (GP) patch: Return address is what was in ra upon entry (saved in UNUSED_OFF1)
     ld  a0, UNUSED_OFF1(s0)
+    sd  a0, RET_ADDR_OFF(s0)
+    j   .Ldone_final
+
+.Lprocess_jal:
+    # JAL patch (type -6).
+    # We need to set the return address in the context (RET_ADDR_OFF) to
+    # patch->return_address (offset 0 of patch_desc).
+    # t0 holds the patch_desc pointer.
+    
+    ld  a0, 0(t0)
     sd  a0, RET_ADDR_OFF(s0)
 
 .Ldone_final:
