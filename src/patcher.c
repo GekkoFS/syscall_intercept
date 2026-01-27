@@ -541,12 +541,6 @@ finalize_and_jump_back(struct patch_desc *patch)
         // Update offset
         offset += padding;
 
-        // Debug GP
-        char buf[128];
-        int l = snprintf(buf, sizeof(buf), "FINALIZE GP: Target %p Addr %p Pad %d Off %d\n", 
-                         patch->return_address, (void*)current_addr, padding, offset);
-        syscall_no_intercept(SYS_write, 2, buf, l);
-
         // 1. auipc t0, 0
         instrs_size += rv_auipc(instrs_buff + instrs_size, REG_T0, 0);
         
@@ -726,11 +720,6 @@ create_patch(struct intercept_desc *desc)
                       patch->return_address = patch->dst_jmp_patch + 4;
                       patch->return_register = REG_T0;
                       
-                      // Debug JAL creation
-                      char buf[128];
-                      int l = snprintf(buf, sizeof(buf), "PATCH JAL: dst=%p ret=%p\n", 
-                                       patch->dst_jmp_patch, patch->return_address);
-                      syscall_no_intercept(SYS_write, 2, buf, l, 0, 0, 0);
                  } else {
                       patch->syscall_num = TYPE_IGNORE;
                  }
@@ -740,6 +729,18 @@ create_patch(struct intercept_desc *desc)
         } else {
 			patch->syscall_num = TYPE_IGNORE;
 		}
+
+        // Fix TYPE_IGNORE initialization to prevent crash
+        if (patch->syscall_num == TYPE_IGNORE) {
+            uint8_t op = *patch->syscall_addr;
+            int ins_size = (op & 0x3) == 0x3 ? 4 : 2;
+            patch->return_address = patch->syscall_addr + ins_size;
+             
+            // Create a dummy relocation buffer with 'ret'
+            patch->relocation_address = cur_asm_relocation_space;
+            rv_jalr(cur_asm_relocation_space, REG_ZERO, REG_RA, 0); // ret
+            cur_asm_relocation_space += 4;
+        }
 
 		position_patch(patch);
 

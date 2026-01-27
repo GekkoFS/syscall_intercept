@@ -371,6 +371,7 @@ asm_entry_point:
     // Fallthrough to common entry
 asm_entry_common:
 	sd	ra, UNUSED_OFF1(sp)
+    sd  ra, ORIG_RA_OFF(sp) // Required for TYPE_GP/copy_GP restoration
     sd  t0, RET_ADDR_OFF(sp)
 
 	// gather patch information and mostly restore the original context
@@ -401,8 +402,10 @@ asm_entry_common:
 	 * instructions at runtime; for this final part, see                 *
 	 * finalize_and_jump_back(). Bye-bye, patch! Good luck out there!    *
 	 *********************************************************************/
-	ld	ra, RELOC_ADDR_OFF(sp)
-	ret
+	ld	t0, RELOC_ADDR_OFF(sp)
+    ld  ra, ORIG_RA_OFF(sp)
+    addi sp, sp, PATCH_SP_OFF
+	jr t0
 	.cfi_endproc
 	.size	asm_entry_point, . - asm_entry_point
 
@@ -436,20 +439,33 @@ exec_relocated_instructions:
     // Unnecessary to move s1 to ra. We jump to S1 directly.
     // Preserving ra is crucial for patched code that relies on it. 
     
-    // Manually restore stack (replacing MV_STACK_TO_TLS)
-    addi sp, sp, PATCH_SP_OFF
+    // Move reloc address to t0 (s1 has reloc addr)
+    mv t0, s1
+    // Restore original s1 (saved in UNUSED_OFF4 by detect_wrapper)
+    ld s1, UNUSED_OFF4(sp)
+
+
     
     // 2. Restore t1, t2 for the relocated code (sp is now sp_orig)
     LDSYMT  t1, asm_t1_orig
     LDSYMT  t2, asm_t2_orig
-
-	// Move reloc address to t0
-    mv t0, s1
-    // Restore original s1 (saved in UNUSED_OFF4 by detect_wrapper)
-    ld s1, UNUSED_OFF4(sp)
     
-    // Jump to relocation address (t0)
-    jr t0
+    // Manually restore stack (replacing MV_STACK_TO_TLS)
+    addi sp, sp, PATCH_SP_OFF
+    
+    // Call relocation buffer as a function
+    jalr ra, t0, 0
+    
+    // Returned! Restoration logic for returning patches (TYPE_GP/MID):
+    
+    // 1. Restore Interceptor Stack Pointer
+    addi sp, sp, -PATCH_SP_OFF
+    
+    // 2. Restore return address (clobbered by jalr)
+    ld ra, UNUSED_OFF1(sp)
+    
+    // 3. Return to next_sys_call
+    ret
 
 	/*
 	 * After executing the relocated instructions, ra holds the address of
@@ -583,6 +599,9 @@ detect_cur_patch_wrapper:
 	 * a0 = struct patch_desc *
 	 */
     
+    // Check for NULL (phantom patch)
+    beqz a0, .Lphantom_patch
+
     // Save pointer to t0 (scratch) because we need a0 for syscall_num later
     mv t0, a0
     
@@ -591,6 +610,10 @@ detect_cur_patch_wrapper:
 
 	// store results (a0 is only relevant to TYPE_SML):
 	// sd	a1, RELOC_ADDR_OFF(s0)
+    
+    // Store patch->return_address (offset 0) to RELOC_ADDR_OFF for asm_entry_point return
+    ld a2, 0(t0)
+    sd a2, RELOC_ADDR_OFF(s0)
     
     // Preserve Original S1 (at 64(sp) = stored by STORE_CONTEXT)
     // Save it to UNUSED_OFF4 of the PARENT frame (s0 is parent sp? No, s0=sp+CONTEXT)
@@ -626,6 +649,15 @@ detect_cur_patch_wrapper:
 .Ldone_final:
 	LOAD_CONTEXT_EPILOGUE
 	ret
+
+.Lphantom_patch:
+    // Handle NULL return: Exit process to avoid segfault
+    li a7, 93 // SYS_exit
+    li a0, 0
+    ecall
+    // Should not reach
+    ret
+
 	.cfi_endproc
 	.size	detect_cur_patch_wrapper, . - detect_cur_patch_wrapper
 

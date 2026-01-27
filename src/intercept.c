@@ -905,10 +905,6 @@ detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_a
     const uint64_t check_ret_addrs[4] = {MID_ret_addr, SML_ret_addr, GW_ret_addr, JAL_ret_addr};
     
     // Debug Trace
-    char buf[128];
-    long len = snprintf(buf, sizeof(buf), "DETECT Check: MID=%lx SML=%lx GW=%lx JAL=%lx\n", 
-                        MID_ret_addr, SML_ret_addr, GW_ret_addr, JAL_ret_addr);
-    syscall_no_intercept(SYS_write, 2, buf, len, 0, 0, 0);
 
 	for (uint8_t ra_idx = 0; ra_idx < (sizeof(check_ret_addrs) / sizeof(check_ret_addrs[0])); ++ra_idx) {
 		uint64_t ra = check_ret_addrs[ra_idx];
@@ -972,10 +968,6 @@ binary_search_fuzzy(const struct patch_desc *items, uint32_t count, uint64_t ret
         uint64_t addr = (uint64_t)items[mid].return_address;
         
         // Debug
-        char buf[128];
-        int l = snprintf(buf, sizeof(buf), "SEARCH: mid=%ld addr=%lx target=%lx diff=%ld\n", 
-                         (long)mid, addr, ret_addr, (long)((int64_t)ret_addr - (int64_t)addr));
-        syscall_no_intercept(SYS_write, 2, buf, l, 0, 0, 0);
 
         // Check fuzzy (handle +/- 20 bytes for debug offset issues)
         int64_t diff = (int64_t)ret_addr - (int64_t)addr;
@@ -996,10 +988,6 @@ get_cur_patch(uint64_t return_address)
 	for (uint32_t o = 0; o < objs_count; ++o) {
 		if (return_address < (uint64_t)objs[o].text_start ||
 				return_address > (uint64_t)objs[o].text_end + 4) {
-            char buf[128];
-            int l = snprintf(buf, sizeof(buf), "BOUNDS FAIL: addr=%lx start=%lx end=%lx obj=%d\n", 
-                             return_address, (uint64_t)objs[o].text_start, (uint64_t)objs[o].text_end, o);
-            syscall_no_intercept(SYS_write, 2, buf, l, 0, 0, 0);
 			continue;
         }
 
