@@ -553,8 +553,8 @@ finalize_and_jump_back(struct patch_desc *patch)
         // 2. ld t0, offset(t0)
         instrs_size += rv_ld(instrs_buff + instrs_size, REG_T0, REG_T0, offset);
         
-        // 3. jalr zero, t0, 0
-        instrs_size += rv_jalr(instrs_buff + instrs_size, REG_ZERO, REG_T0, 0);
+        // 3. jalr t0, t0, 0 (Link t0 to PC+4 for identification)
+        instrs_size += rv_jalr(instrs_buff + instrs_size, REG_T0, REG_T0, 0);
         
         // Padding
         for (int i=0; i<padding; i++) {
@@ -572,7 +572,8 @@ finalize_and_jump_back(struct patch_desc *patch)
         }
         
         // 4. Data
-        uint64_t addr = (uintptr_t)patch->return_address;
+        // Use EXPLICIT continuation address (End of Patch), not patch->return_address (used for ID)
+        uint64_t addr = (uintptr_t)patch->dst_jmp_patch + patch->patch_size_bytes;
         memcpy(instrs_buff + instrs_size, &addr, sizeof(addr));
         instrs_size += sizeof(addr);
     }
@@ -718,11 +719,18 @@ create_patch(struct intercept_desc *desc)
              if (desc->trampoline_jal_address) {
                  int64_t diff = (int64_t)((unsigned char*)desc->trampoline_jal_address - (unsigned char*)patch->syscall_addr);
                  
-                 if (diff >= -0x100000 && diff <= 0xFFFFF) {
+                  if (diff >= -0x100000 && diff <= 0xFFFFF) {
                       patch->syscall_num = TYPE_JAL;
                       patch->patch_size_bytes = 4;
-                      patch->return_address = (uint8_t*)patch->syscall_addr + 4;
+                      // Fix: Use dst_jmp_patch (actual jump location) instead of syscall_addr
+                      patch->return_address = patch->dst_jmp_patch + 4;
                       patch->return_register = REG_T0;
+                      
+                      // Debug JAL creation
+                      char buf[128];
+                      int l = snprintf(buf, sizeof(buf), "PATCH JAL: dst=%p ret=%p\n", 
+                                       patch->dst_jmp_patch, patch->return_address);
+                      syscall_no_intercept(SYS_write, 2, buf, l, 0, 0, 0);
                  } else {
                       patch->syscall_num = TYPE_IGNORE;
                  }
@@ -744,7 +752,25 @@ create_patch(struct intercept_desc *desc)
             // We must jump to the instruction following the patch block.
             // The Logic inside the patch (Prologue/Call/Epilogue) is bypassed
             // by the relocation execution mechanism.
-            patch->return_address = patch->dst_jmp_patch + patch->patch_size_bytes;
+            
+            // For Identification (detect_cur_patch):
+            // TYPE_GP_COMPLETE uses 'jalr t0' at offset 8 (auipc(4)+ld(4)).
+            // t0 will hold PC+4 -> start + 8 + 4 = start + 12.
+            patch->return_address = patch->dst_jmp_patch + 12;
+        }
+        
+        if (patch->syscall_num == TYPE_JAL) {
+             // JAL uses 'jal t0' (4 bytes).
+             // t0 will hold PC+4 -> start + 4.
+             patch->return_address = patch->dst_jmp_patch + 4;
+             
+             // Debug JAL creation - NOW VALID
+              /*
+              char buf[128];
+              int l = snprintf(buf, sizeof(buf), "PATCH JAL: dst=%p ret=%p\n", 
+                               patch->dst_jmp_patch, patch->return_address);
+              syscall_no_intercept(SYS_write, 2, buf, l, 0, 0, 0);
+              */
         }
 
         if (patch->syscall_num != TYPE_IGNORE) {
@@ -919,6 +945,20 @@ activate_patches(struct intercept_desc *desc)
 	// Enable write on code
 	uintptr_t start_aligned = (uintptr_t)desc->text_start & ~(PAGE_SIZE - 1);
 	uintptr_t end_raw = (uintptr_t)desc->text_end;
+    
+    // Debug bounds
+    /*
+    char buf[128];
+    int l = snprintf(buf, sizeof(buf), "PATCHER BOUNDS: start=%lx end=%lx\n", 
+                     (uint64_t)desc->text_start, (uint64_t)desc->text_end);
+    syscall_no_intercept(SYS_write, 2, buf, l, 0, 0, 0);
+    */
+    // Wait, uncomment logging
+    char buf[128];
+    int l = snprintf(buf, sizeof(buf), "PATCHER BOUNDS: start=%lx end=%lx\n", 
+                     (uint64_t)desc->text_start, (uint64_t)desc->text_end);
+    syscall_no_intercept(SYS_write, 2, buf, l, 0, 0, 0);
+
 	mprotect_no_intercept((void *)start_aligned, end_raw - start_aligned,
 			PROT_READ | PROT_WRITE | PROT_EXEC, "activate_patches");
 
@@ -970,8 +1010,15 @@ activate_patches(struct intercept_desc *desc)
 		if (patch->syscall_num == TYPE_IGNORE)
 			continue;
 
-		if (patch->dst_jmp_patch < desc->text_start || patch->dst_jmp_patch >= desc->text_end)
+		if (patch->dst_jmp_patch < desc->text_start || patch->dst_jmp_patch >= desc->text_end) {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "[ERROR] activation bounds fail: dst=%lx start=%lx end=%lx\n", 
+                     (uint64_t)patch->dst_jmp_patch, (uint64_t)desc->text_start, (uint64_t)desc->text_end);
+            syscall_no_intercept(SYS_write, 2, buf, strlen(buf), 0, 0, 0);
 			xabort("activate_patches", "Patch out of bounds");
+        }
+
+
 
 		if (patch->syscall_num == TYPE_GP_COMPLETE)
 			copy_GP_COMPLETE(patch, desc->trampoline_address);

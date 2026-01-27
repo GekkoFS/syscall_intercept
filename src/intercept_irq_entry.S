@@ -350,7 +350,8 @@ asm_entry_point_jal:
 	sd	ra, ORIG_RA_OFF(sp)
     sd  t0, RET_ADDR_OFF(sp)
 	mv	ra, t0
-	j	asm_entry_point
+	mv	ra, t0
+	j	asm_entry_common
 	.cfi_endproc
 	.size	asm_entry_point_jal, . - asm_entry_point_jal
 
@@ -363,8 +364,14 @@ asm_entry_point:
 	 * overwrites it. If the trampoline had been used, it would have     *
 	 * already stored ra on the stack at offset UNUSED_OFF1.             *
 	 *********************************************************************/
-	sd	ra, UNUSED_OFF1(sp)
 	/* This is the entry point for a trampoline jump (library default) */
+    // Fix: TYPE_GP needs to allocate stack frame (same as JAL)
+    addi sp, sp, -PATCH_SP_OFF
+    
+    // Fallthrough to common entry
+asm_entry_common:
+	sd	ra, UNUSED_OFF1(sp)
+    sd  t0, RET_ADDR_OFF(sp)
 
 	// gather patch information and mostly restore the original context
 	call	detect_cur_patch_wrapper

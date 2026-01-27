@@ -98,15 +98,7 @@ add_table_info(struct section_list *list, const Elf64_Shdr *header)
  * add_text_info -- Fill the appropriate fields in an intercept_desc struct
  * about the corresponding code text.
  */
-static void
-add_text_info(struct intercept_desc *desc, const Elf64_Shdr *header,
-		Elf64_Half index)
-{
-	desc->text_offset = header->sh_offset;
-	desc->text_start = desc->base_addr + header->sh_addr;
-	desc->text_end = desc->text_start + header->sh_size - 1;
-	desc->text_section_index = index;
-}
+
 
 /*
  * find_sections
@@ -134,21 +126,38 @@ find_sections(struct intercept_desc *desc, int fd)
 	xread(fd, sec_string_table,
 	    sec_headers[elf_header.e_shstrndx].sh_size);
 
-	bool text_section_found = false;
+	desc->text_start = (uint8_t *)-1;
+    desc->text_end = 0;
+    bool exec_found = false;
 
 	for (Elf64_Half i = 0; i < elf_header.e_shnum; ++i) {
 		const Elf64_Shdr *section = &sec_headers[i];
 		char *name = sec_string_table + section->sh_name;
 
-        /* Debug Loop */
-        // int len=0; while(name[len]) len++;
-        // syscall_no_intercept(SYS_write, 2, name, len, 0, 0, 0);
-        // syscall_no_intercept(SYS_write, 2, "\n", 1, 0, 0, 0);
+        // Union logic for all executable sections (SHF_EXECINSTR=4)
+        // Also include .rodata and .eh_frame as they are in the R-E segment on RISC-V and we patch there
+        bool is_exec = (section->sh_flags & 0x4);
+        if (!is_exec) {
+             if (strcmp(name, ".rodata") == 0 || strcmp(name, ".eh_frame") == 0 || strcmp(name, ".gcc_except_table") == 0) {
+                 is_exec = true;
+             }
+        }
 
-		if (strcmp(name, ".text") == 0) {
-			text_section_found = true;
-			add_text_info(desc, section, i);
-		} else if (section->sh_type == SHT_SYMTAB ||
+        if (is_exec) {
+             exec_found = true;
+             uint8_t *sec_start = desc->base_addr + section->sh_addr;
+             uint8_t *sec_end = sec_start + section->sh_size - 1;
+             
+             if (sec_start < desc->text_start) desc->text_start = sec_start;
+             if (sec_end > desc->text_end) desc->text_end = sec_end;
+             
+             if (strcmp(name, ".text") == 0) {
+                 desc->text_section_index = i;
+                 desc->text_offset = section->sh_offset; 
+             }
+        }
+
+		if (section->sh_type == SHT_SYMTAB ||
 		    section->sh_type == SHT_DYNSYM) {
 			debug_dump("found symbol table: %s\n", name);
 			add_table_info(&desc->symbol_tables, section);
@@ -158,8 +167,8 @@ find_sections(struct intercept_desc *desc, int fd)
 		}
 	}
 
-	if (!text_section_found)
-		xabort(__func__, "text section not found");
+	if (!exec_found)
+		xabort(__func__, "executable section not found");
 }
 
 /*
@@ -544,8 +553,8 @@ fill_up_patch(struct intercept_desc *desc, struct patch_desc *patch,
 		else if (surr[i].is_a7_modified)
 			syscall_num = -1;
 	}
-    if (syscall_num == 139) {
-        // rt_sigreturn (139)
+    if (syscall_num == 139 || syscall_num == 80) {
+        // rt_sigreturn (139) and fstat (80)
         // Explicitly IGNORE to skip patching
         patch->syscall_num = TYPE_IGNORE;
     } else if (syscall_num != -1) {
