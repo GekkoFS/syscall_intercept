@@ -69,6 +69,7 @@ struct intercept_disasm_result {
 	const unsigned char *rip_ref_addr;
 
 	int16_t a7_set;
+	int8_t a7_source_reg;
 	bool is_a7_modified;
 	bool is_ra_used;
 	uint8_t reg_set;

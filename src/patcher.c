@@ -165,9 +165,16 @@ is_copiable_after_syscall(struct intercept_disasm_result ins)
 static bool
 is_SML_patchable(struct patch_desc *patch, uint8_t patchable_size)
 {
-	if (patch->syscall_num < 0)
+	if (patch->syscall_num < 0) {
+		if (patch->a7_source_reg >= 0 && patch->a7_source_reg <= 6)
+			return true;
+		/* 
+		 * If we haven't identified the source, fallback to rigid check.
+		 * But actually, if implicit A7 modification is detected but no source,
+		 * we can't safely SML patch because we can't recover the number.
+		 */
 		return false;
-	else if (patchable_size <= JAL_INS_SIZE)
+	} else if (patchable_size <= JAL_INS_SIZE)
 		return false;
 	else if (!patch->return_register &&
 			(patchable_size == JAL_INS_SIZE + C_LI_INS_SIZE &&
@@ -233,6 +240,8 @@ check_surrounding_instructions(struct intercept_desc *desc,
 	uint8_t patch_start_idx = 0;
 	uint8_t patch_end_idx = instrs_num;
 	uint8_t patchable_size = 0;
+	
+	patch->a7_source_reg = -1;
 
 	// check if the instruction after the ecall sets a register
 	if (instrs[syscall_idx + 1].reg_set)
@@ -247,10 +256,17 @@ check_surrounding_instructions(struct intercept_desc *desc,
 				patch_start_idx = i + 1;
 			}
 
-			if (instrs[i].a7_set > -1)
+			if (instrs[i].a7_set > -1) {
 				patch->syscall_num = instrs[i].a7_set;
-			else if (instrs[i].is_a7_modified)
+				patch->a7_source_reg = -1;
+			} else if (instrs[i].is_a7_modified) {
 				patch->syscall_num = -1;
+				// check if we captured the source register
+				if (instrs[i].a7_source_reg >= 0)
+					patch->a7_source_reg = instrs[i].a7_source_reg;
+				else
+					patch->a7_source_reg = -1;
+			}
 		} else if (i > syscall_idx) {
 			if (instrs[i].is_syscall) {
 				patch_end_idx = check_two_ecalls(patch,

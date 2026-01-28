@@ -174,11 +174,18 @@ get_a7(struct intercept_disasm_result *result, struct cs_insn *insn)
 		if (insn->detail->riscv.operands[1].reg == RISCV_REG_ZERO) {
 			result->a7_set = insn->detail->riscv.operands[2].imm;
 			return;
+		} else if (insn->detail->riscv.operands[2].imm == 0) {
+			result->is_a7_modified = true;
+			result->a7_source_reg = insn->detail->riscv.operands[1].reg;
+			return;
 		}
 		/* fallthrough */
 	default:
-		if (insn->detail->riscv.operands[0].access > 0x1)
+		if (insn->detail->riscv.operands[0].access > 0x1) {
 			result->is_a7_modified = true;
+			/* check for mv a7, reg (pseudo-instruction usually ADDI) */
+            /* We already handled common ADDI case above, but let's be generic if needed */
+		}
 		return;
 	}
 }
@@ -261,7 +268,8 @@ intercept_disasm_next_instruction(struct intercept_disasm_context *context,
 	struct intercept_disasm_result result = {
 		.address = code,
 		// syscall can be 0 so set it to -1 initially
-		.a7_set = -1
+		.a7_set = -1,
+		.a7_source_reg = -1
 	};
 	const unsigned char *start = code;
 	size_t size = (size_t)(context->end - code + 1);

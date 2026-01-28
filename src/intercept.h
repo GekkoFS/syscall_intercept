@@ -81,6 +81,7 @@ struct patch_desc {
 	const uint8_t *relocation_address;
 	/* holds the a7 value found before ecall or -1 for MID a7, -2 for GW */
 	int16_t syscall_num;
+	int8_t a7_source_reg;
 
 	/* the original syscall instruction */
 	const uint8_t *syscall_addr;

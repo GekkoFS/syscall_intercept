@@ -825,6 +825,11 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		.args[5] = a5
 	};
 
+	if (desc.nr == -1 && patch->a7_source_reg >= 0) {
+		if (patch->a7_source_reg <= 5)
+			desc.nr = (int)desc.args[patch->a7_source_reg];
+	}
+
 #ifndef SYSCALL_INTERCEPT_WITHOUT_MAGIC_SYSCALLS
 	if (handle_magic_syscalls(&desc, &result.a0) == 0)
 		return result;
