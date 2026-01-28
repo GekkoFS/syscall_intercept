@@ -54,9 +54,7 @@ void
 mprotect_no_intercept(void *addr, size_t len, int prot,
 			const char *msg_on_error)
 {
-	struct wrapper_ret ret;
-	ret = syscall_no_intercept(SYS_mprotect, addr, len, prot);
-	long result = ret.a0;
+	long result = syscall_no_intercept(SYS_mprotect, addr, len, prot);
 
 	xabort_on_syserror(result, __func__, msg_on_error);
 }
@@ -64,13 +62,10 @@ mprotect_no_intercept(void *addr, size_t len, int prot,
 void *
 xmmap_anon(size_t size)
 {
-	struct wrapper_ret ret;
-
-	ret = syscall_no_intercept(SYS_mmap,
+	long addr = syscall_no_intercept(SYS_mmap,
 					NULL, size,
 					PROT_READ | PROT_WRITE,
 					MAP_PRIVATE | MAP_ANON, -1, (off_t)0);
-	long addr = ret.a0;
 
 	xabort_on_syserror(addr, __func__, NULL);
 
@@ -80,11 +75,8 @@ xmmap_anon(size_t size)
 void *
 xmremap(void *addr, size_t old, size_t new)
 {
-	struct wrapper_ret ret;
-
-	ret = syscall_no_intercept(SYS_mremap, addr,
+	long new_addr = syscall_no_intercept(SYS_mremap, addr,
 					old, new, MREMAP_MAYMOVE);
-	long new_addr = ret.a0;
 
 	xabort_on_syserror(new_addr, __func__, NULL);
 
@@ -94,10 +86,7 @@ xmremap(void *addr, size_t old, size_t new)
 void
 xmunmap(void *addr, size_t len)
 {
-	struct wrapper_ret ret;
-
-	ret = syscall_no_intercept(SYS_munmap, addr, len);
-	long result = ret.a0;
+	long result = syscall_no_intercept(SYS_munmap, addr, len);
 
 	xabort_on_syserror(result, __func__, NULL);
 }
@@ -105,10 +94,7 @@ xmunmap(void *addr, size_t len)
 long
 xlseek(long fd, unsigned long off, int whence)
 {
-	struct wrapper_ret ret;
-
-	ret = syscall_no_intercept(SYS_lseek, fd, off, whence);
-	long result = ret.a0;
+	long result = syscall_no_intercept(SYS_lseek, fd, off, whence);
 
 	xabort_on_syserror(result, __func__, NULL);
 
@@ -118,10 +104,7 @@ xlseek(long fd, unsigned long off, int whence)
 void
 xread(long fd, void *buffer, size_t size)
 {
-	struct wrapper_ret ret;
-
-	ret = syscall_no_intercept(SYS_read, fd, buffer, size);
-	long result = ret.a0;
+	long result = syscall_no_intercept(SYS_read, fd, buffer, size);
 
 	if (result != (long)size)
 		xabort_errno(syscall_error_code(result), __func__, NULL);

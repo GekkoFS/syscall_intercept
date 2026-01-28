@@ -868,7 +868,12 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 			return (struct wrapper_ret){.a0 = UNH_SYSCALL, .a1 = UNH_CLONE};
 #endif
 
-		result = syscall_no_intercept(desc.nr,
+		typedef struct wrapper_ret (*syscall_wrapper_func)(long, long, long, long, long, long, long);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-function-type"
+		syscall_wrapper_func fn = (syscall_wrapper_func)syscall_no_intercept;
+#pragma GCC diagnostic pop
+		result = fn(desc.nr,
 				desc.args[0],
 				desc.args[1],
 				desc.args[2],
