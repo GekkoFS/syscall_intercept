@@ -39,7 +39,7 @@
 
 	/* Constants */
 	// relocation space size, increase it if needed
-	.equ	RELOCATION_SIZE, 0x20000
+	.equ	RELOCATION_SIZE, 0x10000
 	// NOTE: align this to 16, (NR_GPR + NR_FPR) * 8 % 16 == 0
 	.equ	NR_GPR, 32
 #ifdef __riscv_f
@@ -517,6 +517,8 @@ detect_cur_patch_wrapper:
 	mv	a1, a7
 	// a2 will hold TYPE_GW ret addr
 	ld	a2, UNUSED_OFF1(s0)
+	// a3 will hold context pointer (sp)
+	mv	a3, sp
 
 	call	detect_cur_patch
 	/*
@@ -532,6 +534,9 @@ detect_cur_patch_wrapper:
 	// TYPE_MID	a0 == -1
 	// TYPE_GW	a0 == -2
 	bgez	a0, .Lsml
+	// Check for TYPE_GOT_FAILSAFE (-5) which uses SML-like logic (return address in a7)
+	li	t0, -5
+	beq	a0, t0, .Lsml
 	addi	a0, a0, 1
 	beqz	a0, .Lmid
 	/*
@@ -668,7 +673,7 @@ asm_relocation_space:
 
 
 	.section .data
-	.align	3
+	.balign	8
 	.global	asm_relocation_space_size
 	.hidden	asm_relocation_space_size
 asm_relocation_space_size:
@@ -679,14 +684,14 @@ asm_relocation_space_size:
 	 * access-fault exception. Also, misaligned LR/SC sequences also raise
 	 * the possibility of accessing multiple reservation sets at once.
 	 */
-	.align	2
+	.balign	4
 	.local	lock_SHR
 lock_SHR:
 	.4byte	0
 
 
 	/* .bss is the shared space for multithreading in case of CLONE_SETTLS */
-	.align	3
+	.balign	8
 	.section .bss
 	.local	asm_ra_orig_shr
 	.local	return_address_shr
@@ -700,14 +705,14 @@ reloc_instrs_addr_shr:
 
 
 	.section .tdata
-	.align	2
+	.balign	4
 	.local	lock_TLS
 lock_TLS:
 	.4byte	0
 
 
 	/* .tbss is used for multithreading */
-	.align	3
+	.balign	8
 	.section .tbss
 	.global	asm_ra_orig
 	.hidden	asm_ra_orig
