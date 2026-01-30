@@ -111,7 +111,7 @@ void (*intercept_hook_point_post_kernel)(long syscall_number,
 			long result)	
 	__attribute__((visibility("default")));
 
-bool debug_dumps_on;
+bool debug_dumps_on = false;
 
 void
 debug_dump(const char *fmt, ...)
@@ -510,6 +510,7 @@ intercept(int argc, char **argv)
 			continue;
 
 		allocate_trampoline(objs + i);
+		find_gp_and_got(objs + i);
 		create_patch(objs + i);
 	}
 
@@ -653,7 +654,7 @@ binary_search(const struct patch_desc *items, uint32_t count, uint64_t ret_addr)
  * first things done is to find its "identity" using its unique return address.
  */
 __attribute__((section(".text.irqentry"))) struct wrapper_ret
-detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_addr)
+detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_addr, void *context)
 {
 	const uint64_t check_ret_addrs[3] = {MID_ret_addr, SML_ret_addr, GW_ret_addr};
 
@@ -661,30 +662,102 @@ detect_cur_patch(uint64_t MID_ret_addr, uint64_t SML_ret_addr, uint64_t GW_ret_a
 		uint64_t ra = check_ret_addrs[ra_idx];
 		for (uint32_t o = 0; o < objs_count; ++o) {
 			// check if current obj contains the return address
-			if (ra < (uint64_t)objs[o].text_start || ra > (uint64_t)objs[o].text_end)
-				continue;
+			if (ra >= (uint64_t)objs[o].text_start && ra <= (uint64_t)objs[o].text_end) {
 
-			int64_t match_idx = binary_search(objs[o].items, objs[o].count, ra);
-			if (match_idx >= 0) {
-				const struct patch_desc *patch = objs[o].items + match_idx;
-				int64_t sn = (int64_t)patch->syscall_num;
-				int64_t reloc_addr = (int64_t)patch->relocation_address;
+				int64_t match_idx = binary_search(objs[o].items, objs[o].count, ra);
+				if (match_idx >= 0) {
+					const struct patch_desc *patch = objs[o].items + match_idx;
+					int64_t sn = (int64_t)patch->syscall_num;
+					int64_t reloc_addr = (int64_t)patch->relocation_address;
 
-				switch (sn) {
-				case TYPE_GW:
-					if (ra_idx == 2)
-						return (struct wrapper_ret){sn, reloc_addr};
-					break;
-				case TYPE_MID:
-					if (ra_idx == 0)
-						return (struct wrapper_ret){sn, reloc_addr};
-					break;
-				default: // TYPE_SML
-					if (ra_idx == 1)
-						return (struct wrapper_ret){sn, reloc_addr};
-					break;
+					switch (sn) {
+					case TYPE_GW:
+						if (ra_idx == 2)
+							return (struct wrapper_ret){sn, reloc_addr};
+						break;
+					case TYPE_MID:
+						if (ra_idx == 0)
+							return (struct wrapper_ret){sn, reloc_addr};
+						break;
+						break;
+					case TYPE_MINI_TRAMP:
+						// Works like MID (ra_idx 0)
+						// Since we only overwrite ecall, a7 is logically preserved.
+						// Use SML_ret_addr (which holds passed a7) as syscall number.
+						if (ra_idx == 0) {
+							sn = (int64_t)SML_ret_addr;
+							return (struct wrapper_ret){sn, reloc_addr};
+						}
+						break;
+                    case TYPE_INPLACE:
+                        // If using A7 linkage (SML-style), link is SML_ret_addr (ra_idx 1).
+                        // Works like MID, but we must fix a7.
+                        if (ra_idx == 1) {
+                            if (patch->a7_source_reg >= 0) {
+								unsigned long *ctx = (unsigned long *)context;
+								int reg_idx = patch->a7_source_reg - 1;
+								if (reg_idx >= 0 && reg_idx < 31) {
+									sn = (int64_t)ctx[reg_idx];
+                                    // Fix a7 (index 16) in context
+                                    ctx[16] = (unsigned long)sn;
+                                    // Set RET_ADDR_OFF (ctx[2]) explicitly because .Lexecute_original expects it
+                                    // and we bypassed the logic that usually sets it (in .Lsml).
+                                    ctx[2] = (int64_t)patch->return_address;
+                                    
+                                    // Return sn to take standard .Lexecute_original path (simulated GW)
+                                    // This requires INPLACE patches to use A7 linkage (like SML) to set RET_ADDR_OFF correctly.
+                                    return (struct wrapper_ret){sn, (int64_t)patch->relocation_address};
+                                }
+							}
+                            // If we can't recover sn, we fail.
+                        }
+                        // If wide jump (JALR A7), link is A7 (ra_idx 1).
+                        // Fallthrough to shared logic with GOT_FAILSAFE.
+						if (ra_idx == 1) {
+							if (patch->a7_source_reg >= 0) {
+								unsigned long *ctx = (unsigned long *)context;
+								int reg_idx = patch->a7_source_reg - 1;
+								if (reg_idx >= 0 && reg_idx < 31)
+									sn = (int64_t)ctx[reg_idx];
+							}
+                            return (struct wrapper_ret){sn, (int64_t)patch->relocation_address};
+                        }
+						break;
+					case TYPE_GOT_FAILSAFE:
+						// Works like SML, link in a7 (SML_ret_addr, idx 1)
+						if (ra_idx == 1) {
+							if (patch->a7_source_reg >= 0) {
+								unsigned long *ctx = (unsigned long *)context;
+								// intercept_irq_entry.S: store at (reg_num - 1) * 8(sp)
+								// reg_num is 1-based (x1..x31). x0 is not stored.
+								int reg_idx = patch->a7_source_reg - 1;
+								if (reg_idx >= 0 && reg_idx < 31)
+									sn = (int64_t)ctx[reg_idx];
+							}
+							return (struct wrapper_ret){sn, reloc_addr};
+						}
+						break;
+					default: // TYPE_SML
+						if (ra_idx == 1)
+							return (struct wrapper_ret){sn, reloc_addr};
+						break;
+					}
+				 break;
 				}
-			 break;
+			}
+			
+			// Check if return address is in GOT (for FAILSAFE patches)
+			if (objs[o].got_start && ra >= (uint64_t)objs[o].got_start && ra <= (uint64_t)objs[o].got_end) {
+				// Linear search for patch with this GOT key
+				for (uint32_t i = 0; i < objs[o].count; ++i) {
+					const struct patch_desc *patch = objs[o].items + i;
+					if ((uint64_t)patch->got_entry_addr == ra) {
+						int64_t sn = (int64_t)patch->syscall_num;
+						int64_t reloc_addr = (int64_t)patch->relocation_address;
+						if (sn == TYPE_GOT_FAILSAFE)
+							return (struct wrapper_ret){sn, reloc_addr};
+					}
+				}
 			}
 		}
 	}
@@ -696,13 +769,22 @@ static inline __attribute__((section(".text.irqentry"))) struct patch_desc *
 get_cur_patch(uint64_t return_address)
 {
 	for (uint32_t o = 0; o < objs_count; ++o) {
-		if (return_address < (uint64_t)objs[o].text_start ||
-				return_address > (uint64_t)objs[o].text_end)
-			continue;
+		if (return_address >= (uint64_t)objs[o].text_start &&
+				return_address <= (uint64_t)objs[o].text_end) {
 
-		int64_t match_idx = binary_search(objs[o].items, objs[o].count, return_address);
-		if (match_idx >= 0)
-			return objs[o].items + match_idx;
+			int64_t match_idx = binary_search(objs[o].items, objs[o].count, return_address);
+			if (match_idx >= 0)
+				return objs[o].items + match_idx;
+		}
+
+		// Check GOT
+		if (objs[o].got_start && return_address >= (uint64_t)objs[o].got_start &&
+			return_address <= (uint64_t)objs[o].got_end) {
+			for (uint32_t i = 0; i < objs[o].count; ++i) {
+				if ((uint64_t)objs[o].items[i].got_entry_addr == return_address)
+					return objs[o].items + i;
+			}
+		}
 	}
 
 	xabort(__func__, "failed to identify patch");
@@ -803,17 +885,16 @@ intercept_routine_post_clone(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
  * rsp_in_asm_wrapper -- the stack pointer to restore after returning
  *  from this function.
  */
+
+
 __attribute__((section(".text.irqentry"))) struct wrapper_ret
 intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 			int64_t a4, int64_t a5, int64_t a6, int64_t a7)
 {
 	struct wrapper_ret result = {.a0 = a0, .a1 = a1};
-	int forward_to_kernel = true;
-	const struct patch_desc *patch = get_cur_patch(a6);
+
 	/*
-	 * The RISC-V version of this library doesn't rely on offsets, instead
-	 * ecall args get passed directly. It's more straightforward, and
-	 * manually arranging the layout is likely to "offset" a programmer.
+	 * Capture arguments immediately to prevent clobbering by function calls (like get_cur_patch)
 	 */
 	struct syscall_desc desc = {
 		.nr = (int)a7, /* ignore higher 32 bits */
@@ -824,6 +905,11 @@ intercept_routine(int64_t a0, int64_t a1, int64_t a2, int64_t a3,
 		.args[4] = a4,
 		.args[5] = a5
 	};
+
+	int forward_to_kernel = true;
+	const struct patch_desc *patch = get_cur_patch(a6);
+
+
 
 	if (desc.nr == -1 && patch->a7_source_reg >= 0) {
 		if (patch->a7_source_reg <= 5)

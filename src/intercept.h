@@ -40,6 +40,7 @@
 
 #include <stdbool.h>
 #include <elf.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <dlfcn.h>
 #include <link.h>
@@ -100,6 +101,7 @@ struct patch_desc {
 	 */
 	uint8_t *dst_jmp_patch;
 	uint8_t patch_size_bytes;
+	uint32_t got_offset;
 
 	/* align patch with surrounding instrs, only needed with compressed code */
 #ifdef __riscv_c
@@ -114,6 +116,7 @@ struct patch_desc {
 	 * both the directly preceding, and the directly following are
 	 * single byte instruction, that only gives 4 bytes of space ).
 	 */
+	uint8_t *got_entry_addr;
 	struct intercept_disasm_result *surrounding_instrs;
 	uint8_t syscall_idx;
 	bool is_ra_used_before;
@@ -184,14 +187,22 @@ struct intercept_desc {
 	uint8_t *jump_table;
 
 	/* the RISC-V version only needs one trampoline per patched library */
+	/* the RISC-V version only needs one trampoline per patched library */
 	uint8_t *trampoline_address;
+	uint8_t *gp_value;
+	uint8_t *got_start;
+	uint8_t *got_end;
 };
 
 bool has_jump(const struct intercept_desc *desc, const uint8_t *addr);
 void mark_jump(const struct intercept_desc *desc, const unsigned char *addr);
 
 void allocate_trampoline(struct intercept_desc *desc);
+void find_gp_and_got(struct intercept_desc *desc);
+uint8_t *allocate_from_got_holes(struct intercept_desc *desc, size_t size);
 void find_syscalls(struct intercept_desc *desc);
+void find_syscalls(struct intercept_desc *desc);
+uint8_t *find_usable_text_hole(struct intercept_desc *desc, const uint8_t *around, size_t size);
 
 void create_patch(struct intercept_desc *desc);
 
@@ -206,6 +217,11 @@ void activate_patches(struct intercept_desc *desc);
 #define TYPE_GW			-2
 #define TYPE_MID		-1
 //Implicitly: TYPE_SML >= 0
+#define TYPE_GOT_COMPLETE	-4
+#define TYPE_GOT_FAILSAFE	-5
+#define TYPE_GOT_FAILSAFE	-5
+#define TYPE_MINI_TRAMP     -6
+#define TYPE_INPLACE        -7
 
 #define TYPE_MID_SIZE		(MODIFY_SP_INS_SIZE + \
 				STORE_LOAD_INS_SIZE + \
@@ -219,8 +235,37 @@ void activate_patches(struct intercept_desc *desc);
 				STORE_LOAD_INS_SIZE + \
 				MODIFY_SP_INS_SIZE)
 
+#ifdef __riscv_c
+#define TYPE_GOT_COMPLETE_SIZE (RVC_INS_SIZE * 5) // 10 bytes
+#define TYPE_MINI_TRAMP_SIZE   2 // c.jal hole
+/* jalr zero, offset(gp); (4 bytes) + nops? No, 4 bytes is C.JALR? */
+/* User said: jalr zero, <+-2KB>(gp) is 4 bytes (standard JALR). */
+/* User said "Fail-safe Patch is 6 or 8 bytes...". */
+/* Why 6? Maybe alignment or C.NOP? */
+/* Actually, standard JALR is 4 bytes. If aligned, 4 bytes. If unaligned, maybe we need padding? */
+/* Let's assume 4 bytes for the jump itself. */
+/* Wait, user said "Fail-safe Patch is 6 or 8 bytes...". */
+/* Ah, "In the GOT... reduces each Fail-safe site from at least 26 bytes to 18 bytes." */
+/* But at the patch site? "Fail-safe Patch is 6 or 8 bytes in size... uses an indirect jump instruction jalr zero,<±2KiB>(gp)... The return address is discarded... */
+/* jalr is 4 bytes. Maybe they mean C.JALR (2 bytes)? But C.JALR uses rs1 not gp offset. */
+/* So it must be JALR (4 bytes). Why 6 or 8? */
+/* "At the same time, a classical epilogue could also be used... lwu a7... addi sp..." */
+/* Maybe they want to restore context at site? No, "The return address is discarded". */
+/* Let's look at Gateway Solution. Small Patch is 6-8 bytes. */
+/* It seems 6 bytes = 4 byte JALR + 2 byte NOP/Align? or 4 byte JALR + 2 byte C instructions? */
+/* Let's stick to JALR (4 bytes) + padding if needed. But usually we need to be atomic or something. */
+/* Actually, just JALR zero, offset(gp) is 4 bytes. */
+/* Converting to use 6 bytes minimum to be safe? */
+/* I will define it as 6 bytes minimum for now to match "Small Patch" sizing. */
+#define TYPE_GOT_FAILSAFE_SIZE 6
+#else
+#define TYPE_GOT_COMPLETE_SIZE 20 // Fallback if no C? But user assumes C for 10 bytes.
+#define TYPE_GOT_FAILSAFE_SIZE 8
+#endif
+
+#define RELOCATION_SPACE_SIZE 0x10000
 #define TRAMPOLINE_SIZE 	(STORE_LOAD_INS_SIZE + \
-				JUMP_ABS_INS_SIZE)
+				JUMP_ABS_INS_SIZE + RELOCATION_SPACE_SIZE + PAGE_SIZE)
 /*
  * When the trampoline is not used, the GW jumps directly to asm_entry_point
  * to store its ra in 24(sp) (first instruction in asm_entry_point). Trampoline

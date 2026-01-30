@@ -77,9 +77,7 @@ syscall_no_intercept(long syscall_number, ...);
 static int
 open_orig_file(const struct intercept_desc *desc)
 {
-	int fd;
-
-	fd = syscall_no_intercept(SYS_openat, AT_FDCWD, desc->path, O_RDONLY);
+	int fd = syscall_no_intercept(SYS_openat, AT_FDCWD, desc->path, O_RDONLY);
 
 	xabort_on_syserror(fd, __func__, NULL);
 
@@ -550,6 +548,9 @@ static void
 crawl_text(struct intercept_desc *desc)
 {
 	uint8_t *code = desc->text_start;
+    
+    // Force debug dumps
+    debug_dumps_on = true;
 
 	uint8_t instrs_num = SURROUNDING_INSTRS_NUM;
 
@@ -564,6 +565,9 @@ crawl_text(struct intercept_desc *desc)
 	    intercept_disasm_init(desc->text_start, desc->text_end);
 
 	while (code <= desc->text_end) {
+        if (code == desc->base_addr + 0x6c27a) {
+             syscall_no_intercept(SYS_write, 2, "DEBUG: Scanned 0x6c27a\n", 21);
+        }
 		struct intercept_disasm_result result;
 
 		result = intercept_disasm_next_instruction(context, code);
@@ -716,6 +720,27 @@ allocate_trampoline(struct intercept_desc *desc)
 		return;
 	}
 
+	/* Try to allocate in GOT holes first */
+	if (getenv("INTERCEPT_USE_GOT")) {
+		// find_gp_and_got must have been called?
+		// intercept.c calls it.
+		// allocate_from_got_holes needs initialized desc.
+		// Actually, intercept.c loop: allocate_trampoline -> find_gp -> create_patch.
+		// So find_gp hasn't run yet!
+		// We need to call find_gp_and_got from here or reorder loops.
+		// intercept.c: find_gp_and_got is called where allocate_got was.
+		// allocate_trampoline is called BEFORE it.
+		// I must run find_gp_and_got inside allocate_trampoline or move call in intercept.c.
+		// Safest: call it here.
+		find_gp_and_got(desc);
+		desc->trampoline_address = allocate_from_got_holes(desc, TRAMPOLINE_SIZE);
+		if (desc->trampoline_address) {
+			// Clear cache
+			__builtin___clear_cache((char *)desc->trampoline_address, (char *)(desc->trampoline_address + TRAMPOLINE_SIZE));
+			return;
+		}
+	}
+
 	uint8_t *guess; /* Where we would like to allocate the table */
 
 	if ((uintptr_t)desc->text_end < (uintptr_t)-JUMP_2GB_NEG_REACH) {
@@ -754,8 +779,239 @@ allocate_trampoline(struct intercept_desc *desc)
 			break;
 		}
 	}
+	
+	if (desc->trampoline_address == MAP_FAILED) {
+		xabort(__func__, "Failed to allocate trampoline after multiple attempts");
+	}
 
 	__builtin___clear_cache((char *)guess, (char *)(guess + TRAMPOLINE_SIZE));
+}
+
+
+/*
+ * find_gp_and_got
+ * Locates the GP value (via _GLOBAL_OFFSET_TABLE_) and the GOT section.
+ */
+void
+find_gp_and_got(struct intercept_desc *desc)
+{
+	char *e = getenv("INTERCEPT_USE_GOT");
+	if (!e) {
+		desc->gp_value = NULL;
+		return;
+	}
+
+	int fd = open_orig_file(desc);
+	if (fd < 0) return;
+
+	Elf64_Ehdr ehdr;
+	xlseek(fd, 0, SEEK_SET);
+	xread(fd, &ehdr, sizeof(ehdr));
+
+	// Read Section Headers
+	size_t sh_size = ehdr.e_shentsize * ehdr.e_shnum;
+	Elf64_Shdr *shdrs = malloc(sh_size);
+	if (!shdrs) {
+		syscall_no_intercept(SYS_close, fd);
+		return;
+	}
+
+	xlseek(fd, ehdr.e_shoff, SEEK_SET);
+	xread(fd, shdrs, sh_size);
+
+	// Find the symbol table (SHT_SYMTAB or SHT_DYNSYM)
+	// Usually checking both is safer, but _GLOBAL_OFFSET_TABLE_ is usually in DYNSYM for shared libs.
+	for (int i = 0; i < ehdr.e_shnum; ++i) {
+		if (shdrs[i].sh_type == SHT_SYMTAB || shdrs[i].sh_type == SHT_DYNSYM) {
+			Elf64_Shdr *shdr = &shdrs[i];
+			Elf64_Sym *syms = NULL;
+			char *strs = NULL;
+			size_t sym_count = 0;
+
+			size_t size = shdr->sh_size;
+			syms = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, shdr->sh_offset);
+			if (syms == MAP_FAILED) continue;
+
+			Elf64_Shdr *strtab_hdr = &shdrs[shdr->sh_link];
+			strs = mmap(NULL, strtab_hdr->sh_size, PROT_READ, MAP_PRIVATE, fd, strtab_hdr->sh_offset);
+			if (strs == MAP_FAILED) {
+				munmap(syms, size);
+				continue;
+			}
+
+			sym_count = size / sizeof(Elf64_Sym);
+			for (size_t j = 0; j < sym_count; ++j) {
+				if (strcmp(strs + syms[j].st_name, "_GLOBAL_OFFSET_TABLE_") == 0) {
+					desc->gp_value = desc->base_addr + syms[j].st_value;
+					debug_dump("DEBUG: find_gp_and_got FOUND gp_value=%p\n", desc->gp_value);
+
+					// Scan all sections to find the one containing gp
+					for (int k = 0; k < ehdr.e_shnum; ++k) {
+						Elf64_Shdr *s = &shdrs[k];
+						uintptr_t s_start = (uintptr_t)desc->base_addr + s->sh_addr;
+						uintptr_t s_end = s_start + s->sh_size;
+
+						if ((uintptr_t)desc->gp_value >= s_start && (uintptr_t)desc->gp_value < s_end) {
+							desc->got_start = (uint8_t *)s_start;
+							desc->got_end = (uint8_t *)s_end;
+
+							// Important: mprotect this region to allow EXECUTION
+							uintptr_t page_start = s_start & ~(0xfff);
+							uintptr_t page_end = (s_end + 0xfff) & ~(0xfff);
+
+							syscall_no_intercept(SYS_mprotect, page_start, page_end - page_start,
+												PROT_READ | PROT_WRITE | PROT_EXEC);
+							break;
+						}
+					}
+					break;
+				}
+			}
+
+			munmap(syms, size);
+			munmap(strs, strtab_hdr->sh_size);
+			
+			if (desc->gp_value) break;
+		}
+	}
+
+	free(shdrs);
+	syscall_no_intercept(SYS_close, fd);
+	if (!desc->gp_value)
+		debug_dump("DEBUG: find_gp_and_got FAILED to find _GLOBAL_OFFSET_TABLE_\n");
+}
+
+/*
+ * allocate_from_got_holes
+ * Scans the GOT section (reachable from gp) for a sequence of zero bytes
+ * of sufficient length.
+ * Returns a pointer to the start of the hole, or NULL.
+ */
+uint8_t *
+allocate_from_got_holes(struct intercept_desc *desc, size_t size)
+{
+	if (!desc->gp_value || !desc->got_start) return NULL;
+
+	// Optimization: Start scanning from gp - 2048 to gp + 2048 (if within bounds)
+	// because `jalr zero, offset(gp)` has limited reach.
+	// Actually, for COMPRESSED instructions, reach might be smaller?
+	// `c.jalr` is register based, reach is full.
+	// `jalr` immediate is +-2KB.
+	// So we are strictly limited to [gp - 2048, gp + 2047].
+
+	uint8_t *search_start = desc->gp_value - 2048;
+	uint8_t *search_end = desc->gp_value + 2047;
+
+	if (search_start < desc->got_start) search_start = desc->got_start;
+	if (search_end > desc->got_end) search_end = desc->got_end;
+	
+	if (search_start >= search_end) return NULL;
+
+	// Ensure alignment. Instructions need 2-byte (C) or 4-byte alignment.
+	// Let's enforce 4-byte alignment for safety.
+	uintptr_t current = (uintptr_t)search_start;
+	current = (current + 3) & ~3;
+	
+	while (current + size <= (uintptr_t)search_end) {
+		// Check if [current, current + size] is all zeros
+		bool is_hole = true;
+		for (size_t i = 0; i < size; ++i) {
+			if (((uint8_t *)current)[i] != 0) {
+				is_hole = false;
+				current += (i + 1); // Skip past the non-zero byte
+				current = (current + 3) & ~3; // Re-align
+				break;
+			}
+		}
+
+		if (is_hole) {
+			// Found a hole!
+			// Mark it as used? We are writing code to it immediately?
+			// The caller will overwrite it. But if we call this multiple times,
+			// we need to know it's "allocated".
+			// Since we just check for zeros, and we write code (non-zeros),
+			// subsequent calls will see it as occupied.
+			// Race condition? No, single threaded patching.
+			return (uint8_t *)current;
+		}
+	}
+	
+	return NULL;
+}
+
+/*
+ * find_usable_text_hole
+ * Scans the text section around `around` (+- 2KB) for a hole of `size` bytes.
+ * A hole is defined as a sequence of zeros or NOPs.
+ */
+uint8_t *
+find_usable_text_hole(struct intercept_desc *desc, const uint8_t *around, size_t size)
+{
+	if (!desc->text_start || !desc->text_end) return NULL;
+
+	// Range calculation: [around - 2048, around + 2047]
+	// Clamped to text section bounds.
+	// JAL range is +-1MB (2^20). We use 4-byte JAL.
+	// We search within +- 1MB.
+	
+	uint8_t *search_start = (uint8_t *)around - 1048000; // slightly less than 1MB
+	uint8_t *search_end = (uint8_t *)around + 1048000;
+
+	if (search_start < desc->text_start) search_start = desc->text_start;
+	if (search_end > desc->text_end) search_end = desc->text_end;
+	
+	if (search_start >= search_end) return NULL;
+
+	// Ensure alignment (4-byte preferred)
+	uintptr_t current = (uintptr_t)search_start;
+	current = (current + 3) & ~3;
+
+    uint8_t *hole_start = NULL;
+    size_t hole_len = 0;
+
+	while (current + 4 <= (uintptr_t)search_end) {
+        uint8_t *p = (uint8_t *)current;
+        size_t adv = 0;
+
+        // Check for 0x00
+        if (*p == 0) {
+            adv = 1;
+        }
+        // Check for c.nop (01 00)
+        else if (p[0] == 0x01 && p[1] == 0x00) {
+            adv = 2;
+        }
+        // Check for nop (13 00 00 00)
+        else if (p[0] == 0x13 && p[1] == 0x00 && p[2] == 0x00 && p[3] == 0x00) {
+            adv = 4;
+        }
+
+        if (adv > 0) {
+            if (hole_len == 0) hole_start = p;
+            hole_len += adv;
+            // debug_dump("Hole char: %02x, len: %d\n", *p, (int)hole_len);
+            current += adv;
+            if (hole_len >= size) {
+                // debug_dump("Found hole at %lx size %d\n", (long)hole_start, (int)hole_len);
+                return hole_start;
+            }
+        } else {
+            // Not a hole byte/instruction. Reset.
+            // debug_dump("Reset at %lx\n", (long)p);
+            hole_len = 0;
+            hole_start = NULL;
+            // Advance carefully. Assume 2-byte instruction alignment.
+            current += 2;
+            // Re-align to 2 bytes if we somehow got misaligned (unlikely if checking adv=1)
+            // But if adv=1 (Zero byte), we might be at odd address?
+            // Zero bytes are usually padding.
+            // If we hit non-zero/non-nop, we are likely at code.
+            // Code is 2-byte aligned.
+            if (current % 2 != 0) current++;
+        }
+	}
+	
+	return NULL;
 }
 
 /*
