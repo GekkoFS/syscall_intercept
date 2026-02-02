@@ -167,7 +167,7 @@ static bool
 is_SML_patchable(struct patch_desc *patch, uint8_t patchable_size)
 {
 	if (patch->syscall_num < 0) {
-		if (patch->a7_source_reg >= 0 && patch->a7_source_reg <= 6)
+		if (patch->a7_source_reg >= 0 && patch->a7_source_reg <= 31)
 			return true;
 		/* 
 		 * If we haven't identified the source, fallback to rigid check.
@@ -278,6 +278,24 @@ check_surrounding_instructions(struct intercept_desc *desc,
 				patch_end_idx = i;
 				break;
 			}
+		}
+	}
+
+
+	// Dynamic SML Optimization:
+	// If the patch is Small (won't fit MID/GW) and Dynamic (syscall info unknown/clobbered),
+	// and the ecall instruction itself is large enough (4 bytes),
+	// we should SHRINK the window to start at the ecall.
+	// This preserves the instructions setting A7 (which we otherwise overwrote and lost context).
+	// We set a7_source_reg to REG_A7 to tell the runtime "A7 is valid in A7".
+	if (patch->syscall_num < 0) {
+		size_t prov_len = 0;
+		for (int i = patch_start_idx; i < patch_end_idx; ++i) 
+			prov_len += instrs[i].length;
+		
+		if (prov_len < TYPE_MID_SIZE && instrs[syscall_idx].length >= JAL_INS_SIZE) {
+			patch_start_idx = syscall_idx;
+			patch->a7_source_reg = REG_A7;
 		}
 	}
 
