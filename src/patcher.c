@@ -832,9 +832,23 @@ relocate_instrs(struct patch_desc *patch)
  * find_syscalls, which does the disassembling, finding jump destinations,
  * finding padding bytes, etc..
  */
+static const char *get_patch_mode_str(int type) {
+	if (type == TYPE_GW) return "Gateway";
+	if (type == TYPE_MID) return "Mid-Jump";
+    // Check for new types assuming they are defined since build passed
+    if (type == TYPE_GOT_COMPLETE) return "GOT-Complete";
+    if (type == TYPE_GOT_FAILSAFE) return "GOT-Failsafe";
+    if (type == TYPE_MINI_TRAMP) return "Mini-Trampoline";
+    if (type == TYPE_INPLACE) return "In-Place";
+	return "Small-Trampoline";
+}
+
 void
 create_patch(struct intercept_desc *desc)
 {
+	char *stats_env = getenv("INTERCEPT_LOG_STATS");
+	bool log_stats = (stats_env && stats_env[0] == '1');
+
 	for (uint32_t patch_i = 0; patch_i < desc->count; ++patch_i) {
 		struct patch_desc *patch = desc->items + patch_i;
 		debug_dump("patching %s:0x%lx\n", desc->path,
@@ -973,6 +987,15 @@ if (patch->syscall_num != TYPE_GW || desc->uses_trampoline)
 			if (patch->syscall_num != TYPE_GOT_COMPLETE && patch->syscall_num != TYPE_GOT_FAILSAFE && patch->syscall_num != TYPE_MINI_TRAMP && patch->syscall_num != TYPE_INPLACE)
 				position_patch(patch);
 //		position_patch(patch);
+
+		if (log_stats) {
+			char buffer[256];
+			int l = snprintf(buffer, sizeof(buffer), 
+				"STATS: Patch 0x%lx Type: %s\n", 
+				patch->syscall_offset, 
+				get_patch_mode_str(patch->syscall_num));
+			syscall_no_intercept(SYS_write, 2, buffer, l);
+		}
 
 		uint8_t *last_instr_addr = patch->dst_jmp_patch + patch->patch_size_bytes;
 #ifdef __riscv_c
