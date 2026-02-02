@@ -1,6 +1,7 @@
 /*
  * Copyright 2016-2024, Intel Corporation
  * Contributor: Petar Andrić
+ * Contributor: Ramon Nou
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -77,9 +78,7 @@ syscall_no_intercept(long syscall_number, ...);
 static int
 open_orig_file(const struct intercept_desc *desc)
 {
-	int fd;
-
-	fd = syscall_no_intercept(SYS_openat, AT_FDCWD, desc->path, O_RDONLY);
+	int fd = syscall_no_intercept(SYS_openat, AT_FDCWD, desc->path, O_RDONLY);
 
 	xabort_on_syserror(fd, __func__, NULL);
 
@@ -550,6 +549,9 @@ static void
 crawl_text(struct intercept_desc *desc)
 {
 	uint8_t *code = desc->text_start;
+    
+    // Force debug dumps
+    debug_dumps_on = true;
 
 	uint8_t instrs_num = SURROUNDING_INSTRS_NUM;
 
@@ -564,6 +566,9 @@ crawl_text(struct intercept_desc *desc)
 	    intercept_disasm_init(desc->text_start, desc->text_end);
 
 	while (code <= desc->text_end) {
+        if (code == desc->base_addr + 0x6c27a) {
+            debug_dump("DEBUG: Scanned 0x6c27a\n");
+        }
 		struct intercept_disasm_result result;
 
 		result = intercept_disasm_next_instruction(context, code);
@@ -668,12 +673,9 @@ get_guess(const uint8_t *text_start, uint8_t *guess)
 		if (sscanf(line, "%p-%p", (void **)&start, (void **)&end) != 2)
 			xabort(__func__, "sscanf from /proc/self/maps");
 
-		/*
-		 * Let's see if an existing mapping overlaps
-		 * with the guess!
-		 */
+		/* Check for overlapping mappings */
 		if (end < guess)
-			continue; /* No overlap, let's see the next mapping */
+			continue;
 
 		if (start >= guess + PAGE_SIZE) {
 			/* The rest of the mappings can't possibly overlap */
@@ -716,6 +718,8 @@ allocate_trampoline(struct intercept_desc *desc)
 		return;
 	}
 
+
+
 	uint8_t *guess; /* Where we would like to allocate the table */
 
 	if ((uintptr_t)desc->text_end < (uintptr_t)-JUMP_2GB_NEG_REACH) {
@@ -754,8 +758,89 @@ allocate_trampoline(struct intercept_desc *desc)
 			break;
 		}
 	}
+	
+	if (desc->trampoline_address == MAP_FAILED) {
+		xabort(__func__, "Failed to allocate trampoline after multiple attempts");
+	}
 
 	__builtin___clear_cache((char *)guess, (char *)(guess + TRAMPOLINE_SIZE));
+}
+
+
+
+/*
+ * find_usable_text_hole
+ * Scans the text section around `around` (+- 2KB) for a hole of `size` bytes.
+ * A hole is defined as a sequence of zeros or NOPs.
+ */
+uint8_t *
+find_usable_text_hole(struct intercept_desc *desc, const uint8_t *around, size_t size)
+{
+	if (!desc->text_start || !desc->text_end) return NULL;
+
+	// Range calculation: [around - 2048, around + 2047]
+	// Clamped to text section bounds.
+	// JAL range is +-1MB (2^20). We use 4-byte JAL.
+	// We search within +- 1MB.
+	
+	uint8_t *search_start = (uint8_t *)around - 1048000; // slightly less than 1MB
+	uint8_t *search_end = (uint8_t *)around + 1048000;
+
+	if (search_start < desc->text_start) search_start = desc->text_start;
+	if (search_end > desc->text_end) search_end = desc->text_end;
+	
+	if (search_start >= search_end) return NULL;
+
+	// Ensure alignment (4-byte preferred)
+	uintptr_t current = (uintptr_t)search_start;
+	current = (current + 3) & ~3;
+
+    uint8_t *hole_start = NULL;
+    size_t hole_len = 0;
+
+	while (current + 4 <= (uintptr_t)search_end) {
+        uint8_t *p = (uint8_t *)current;
+        size_t adv = 0;
+
+        // Check for 0x00
+        if (*p == 0) {
+            adv = 1;
+        }
+        // Check for c.nop (01 00)
+        else if (p[0] == 0x01 && p[1] == 0x00) {
+            adv = 2;
+        }
+        // Check for nop (13 00 00 00)
+        else if (p[0] == 0x13 && p[1] == 0x00 && p[2] == 0x00 && p[3] == 0x00) {
+            adv = 4;
+        }
+
+        if (adv > 0) {
+            if (hole_len == 0) hole_start = p;
+            hole_len += adv;
+            // debug_dump("Hole char: %02x, len: %d\n", *p, (int)hole_len);
+            current += adv;
+            if (hole_len >= size) {
+                // debug_dump("Found hole at %lx size %d\n", (long)hole_start, (int)hole_len);
+                return hole_start;
+            }
+        } else {
+            // Not a hole byte/instruction. Reset.
+            // debug_dump("Reset at %lx\n", (long)p);
+            hole_len = 0;
+            hole_start = NULL;
+            // Advance carefully. Assume 2-byte instruction alignment.
+            current += 2;
+            // Re-align to 2 bytes if we somehow got misaligned (unlikely if checking adv=1)
+            // But if adv=1 (Zero byte), we might be at odd address?
+            // Zero bytes are usually padding.
+            // If we hit non-zero/non-nop, we are likely at code.
+            // Code is 2-byte aligned.
+            if (current % 2 != 0) current++;
+        }
+	}
+	
+	return NULL;
 }
 
 /*

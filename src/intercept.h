@@ -1,6 +1,7 @@
 /*
  * Copyright 2016-2024, Intel Corporation
  * Contributor: Petar Andrić
+ * Contributor: Ramon Nou
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -40,6 +41,7 @@
 
 #include <stdbool.h>
 #include <elf.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <dlfcn.h>
 #include <link.h>
@@ -100,6 +102,7 @@ struct patch_desc {
 	 */
 	uint8_t *dst_jmp_patch;
 	uint8_t patch_size_bytes;
+	uint32_t got_offset;
 
 	/* align patch with surrounding instrs, only needed with compressed code */
 #ifdef __riscv_c
@@ -114,6 +117,7 @@ struct patch_desc {
 	 * both the directly preceding, and the directly following are
 	 * single byte instruction, that only gives 4 bytes of space ).
 	 */
+	uint8_t *got_entry_addr;
 	struct intercept_disasm_result *surrounding_instrs;
 	uint8_t syscall_idx;
 	bool is_ra_used_before;
@@ -184,29 +188,43 @@ struct intercept_desc {
 	uint8_t *jump_table;
 
 	/* the RISC-V version only needs one trampoline per patched library */
+	/* the RISC-V version only needs one trampoline per patched library */
 	uint8_t *trampoline_address;
+	uint8_t *gp_value;
+	uint8_t *got_start;
+	uint8_t *got_end;
 };
 
 bool has_jump(const struct intercept_desc *desc, const uint8_t *addr);
 void mark_jump(const struct intercept_desc *desc, const unsigned char *addr);
 
 void allocate_trampoline(struct intercept_desc *desc);
+
 void find_syscalls(struct intercept_desc *desc);
+void find_syscalls(struct intercept_desc *desc);
+uint8_t *find_usable_text_hole(struct intercept_desc *desc, const uint8_t *around, size_t size);
 
 void create_patch(struct intercept_desc *desc);
 
 /*
- * Actually overwrite instructions in glibc.
+ * Overwrite instructions in glibc.
  */
 void activate_patches(struct intercept_desc *desc);
 
 #define SURROUNDING_INSTRS_NUM	13
 #define SYSCALL_IDX		6
 #define TYPE_AVOID		-3
-#define TYPE_GW			-2
-#define TYPE_MID		-1
-//Implicitly: TYPE_SML >= 0
+#define TYPE_GW			-2  /* auipc ra, off; jalr ra, off(ra) (26+ bytes) */
+#define TYPE_MID		-1  /* jal ra, GW_entry (12+ bytes) */
+//Implicitly: TYPE_SML >= 0 /* jal a7, GW_entry (4-8 bytes) */
 
+#define TYPE_MINI_TRAMP     -6  /* jal ra, hole -> auipc t0, off; jalr t0, off(t0) */
+#define TYPE_INPLACE        -7  /* auipc a7, off; jalr a7, off(a7) */
+
+/*
+ * TYPE_MID_SIZE:
+ * MODIFY_SP (addi sp,-16) + SD (save ra) + JAL (jump) + LD (restore ra) + MODIFY_SP (addi sp,16)
+ */
 #define TYPE_MID_SIZE		(MODIFY_SP_INS_SIZE + \
 				STORE_LOAD_INS_SIZE + \
 				JAL_INS_SIZE + \
@@ -219,8 +237,19 @@ void activate_patches(struct intercept_desc *desc);
 				STORE_LOAD_INS_SIZE + \
 				MODIFY_SP_INS_SIZE)
 
+#ifdef __riscv_c
+/*
+ * Mini-Trampoline and In-place patching sizes.
+ * These are defined to ensure sufficient space for jumps.
+ */
+#define TYPE_MINI_TRAMP_SIZE   2
+#define TYPE_INPLACE_SIZE      6
+#else
+#endif
+
+#define RELOCATION_SPACE_SIZE 0x10000
 #define TRAMPOLINE_SIZE 	(STORE_LOAD_INS_SIZE + \
-				JUMP_ABS_INS_SIZE)
+				JUMP_ABS_INS_SIZE + RELOCATION_SPACE_SIZE + PAGE_SIZE)
 /*
  * When the trampoline is not used, the GW jumps directly to asm_entry_point
  * to store its ra in 24(sp) (first instruction in asm_entry_point). Trampoline

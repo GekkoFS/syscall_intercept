@@ -1,6 +1,7 @@
 /*
  * Copyright 2016-2024, Intel Corporation
  * Contributor: Petar Andrić
+ * Contributor: Ramon Nou
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -165,6 +166,10 @@ get_a7(struct intercept_disasm_result *result, struct cs_insn *insn)
 	case RISCV_INS_C_LI:
 		result->a7_set = insn->detail->riscv.operands[1].imm;
 		return;
+	case RISCV_INS_C_MV:
+		result->is_a7_modified = true;
+		result->a7_source_reg = insn->detail->riscv.operands[1].reg;
+		return;
 	/* c.mv a7, reg is encoded as c.add a7, reg */
 	case RISCV_INS_C_ADD:
 		result->is_a7_modified = true;
@@ -184,7 +189,7 @@ get_a7(struct intercept_disasm_result *result, struct cs_insn *insn)
 		if (insn->detail->riscv.operands[0].access > 0x1) {
 			result->is_a7_modified = true;
 			/* check for mv a7, reg (pseudo-instruction usually ADDI) */
-            /* We already handled common ADDI case above, but let's be generic if needed */
+
 		}
 		return;
 	}
