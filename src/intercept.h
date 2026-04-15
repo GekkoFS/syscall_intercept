@@ -140,6 +140,9 @@ struct section_list {
 };
 
 struct intercept_desc {
+	bool is_self;
+	void *tls_data_addr;
+
 	/*
 	 * uses_trampoline_table - For now this is decided runtime
 	 * to make it easy to compare the operation of the library

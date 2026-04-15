@@ -822,7 +822,6 @@ hook(long syscall_number,
 		long arg4, long arg5,
 		long *result)
 {
-	struct wrapper_ret ret;
 	long args[6] = {arg0, arg1, arg2, arg3, arg4, arg5};
 	const struct syscall_desc *desc =
 		get_syscall_desc(syscall_number, args);
@@ -834,10 +833,8 @@ hook(long syscall_number,
 						buffer, buffer_offset);
 	}
 
-	ret = syscall_no_intercept(syscall_number,
+	*result = syscall_no_intercept(syscall_number,
 					arg0, arg1, arg2, arg3, arg4, arg5);
-	*result = ret.a0;
-
 	print_syscall(desc, syscall_number, args, *result);
 
 	return 0;
@@ -846,15 +843,13 @@ hook(long syscall_number,
 static __attribute__((constructor)) void
 start(void)
 {
-	struct wrapper_ret ret;
 	const char *path = getenv("SYSCALL_LOG_PATH");
 
 	if (path == NULL)
 		syscall_no_intercept(SYS_exit_group, 3);
 
-	ret = syscall_no_intercept(SYS_openat, AT_FDCWD,
+	log_fd = syscall_no_intercept(SYS_openat, AT_FDCWD,
 					path, O_CREAT | O_RDWR, (mode_t)0700);
-	log_fd = (int)ret.a0;
 
 	if (log_fd < 0)
 		syscall_no_intercept(SYS_exit_group, 4);

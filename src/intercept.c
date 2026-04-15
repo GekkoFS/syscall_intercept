@@ -63,6 +63,20 @@
 #include "disasm_wrapper.h"
 #include "magic_syscalls.h"
 
+/* Manual TLS offsets for RISC-V to bypass dynamic linker Initial Exec bug */
+uintptr_t off_lock_TLS;
+uintptr_t off_asm_ra_orig;
+uintptr_t off_asm_ra_temp;
+uintptr_t off_return_address;
+uintptr_t off_reloc_ra_temp;
+
+/* Define the thread-local variables in C (built with global-dynamic) */
+__thread int lock_TLS;
+__thread uint64_t asm_ra_orig;
+__thread uint64_t asm_ra_temp;
+__thread uint64_t return_address;
+__thread uint64_t reloc_ra_temp;
+
 /*
  * Unhandled syscalls: syscalls that are not handled in this TU, but
  * intercept_irq_entry handles them.
@@ -113,6 +127,20 @@ void (*intercept_hook_point_post_kernel)(long syscall_number,
 	__attribute__((visibility("default")));
 
 bool debug_dumps_on = false;
+static int diag_fd = 2;
+
+static void log_str(const char *s) {
+	if (!s) return;
+	size_t len = 0; while (s[len]) len++;
+	syscall_no_intercept(SYS_write, diag_fd, s, len);
+}
+
+static void log_hex(uintptr_t v) {
+	char buf[32]; char *p = buf + sizeof(buf) - 1; *p-- = '\0';
+	if (v == 0) *p-- = '0';
+	else { while (v > 0) { unsigned char d = v & 0xf; *p-- = (d < 10) ? (d + '0') : (d - 10 + 'a'); v >>= 4; } }
+	*p-- = 'x'; *p = '0'; log_str(p);
+}
 
 void
 debug_dump(const char *fmt, ...)
@@ -484,9 +512,24 @@ static __attribute__((constructor)) void
 intercept(int argc, char **argv)
 {
 	(void) argc;
+	if (argv != NULL)
+		cmdline = argv[0];
+
+    /* Calculate manual TLS offsets to bypass RISC-V Initial Exec bug */
+	uintptr_t tp = (uintptr_t)__builtin_thread_pointer();
+	off_lock_TLS = (uintptr_t)&lock_TLS - tp;
+	off_asm_ra_orig = (uintptr_t)&asm_ra_orig - tp;
+	off_asm_ra_temp = (uintptr_t)&asm_ra_temp - tp;
+	off_return_address = (uintptr_t)&return_address - tp;
+	off_reloc_ra_temp = (uintptr_t)&reloc_ra_temp - tp;
+
 	char *path = NULL;
-	cmdline = argv[0];
 	extern void init_tls_offset_table(void);
+
+	diag_fd = (int)syscall_no_intercept(SYS_openat, AT_FDCWD, "/tmp/intercept.log", O_WRONLY | O_CREAT | O_APPEND, 0666);
+	if (diag_fd < 0) diag_fd = 2;
+
+	log_str("INTERCEPT: Restored Start, tp="); log_hex(tp); log_str("\n");
 
 	if (!syscall_hook_in_process_allowed())
 		return;
@@ -509,7 +552,6 @@ intercept(int argc, char **argv)
 
 	init_tls_offset_table();
 	write_enable_asm_relocation_space(true);
-
 	for (uint32_t i = 0; i < objs_count; ++i) {
 		if (objs[i].count == 0)
 			continue;
@@ -523,6 +565,8 @@ intercept(int argc, char **argv)
 
 	for (unsigned i = 0; i < objs_count; ++i)
 		activate_patches(objs + i);
+
+	log_str("INTERCEPT: Ready\n");
 }
 
 /*

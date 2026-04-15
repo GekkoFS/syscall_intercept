@@ -219,11 +219,24 @@ init_tls_offset_table(void)
 {
 	uintptr_t tp_addr = (uintptr_t)__builtin_thread_pointer();
 
+	/*
+	 * RISC-V TLS Fixup Debug: Check if our own TLS pointers are valid.
+	 * If the GOT entry is 0, (uintptr_t)&asm_ra_orig will be tp_addr + 0.
+	 */
+	uintptr_t ra_orig_ptr = (uintptr_t)&asm_ra_orig;
+	uintptr_t ra_temp_ptr = (uintptr_t)&asm_ra_temp;
+
+	if (ra_orig_ptr == tp_addr || ra_temp_ptr == tp_addr) {
+		const char msg[] = "INTERCEPT: CRITICAL: Self-TLS TPREL entries are ZERO!\n";
+		syscall_no_intercept(SYS_write, 2, msg, sizeof(msg) - 1);
+	}
+
 	tls_offset_table.asm_ra_orig =
-		(uintptr_t)&asm_ra_orig - tp_addr;
+		ra_orig_ptr - tp_addr;
 	tls_offset_table.asm_ra_temp =
-		(uintptr_t)&asm_ra_temp - tp_addr;
+		ra_temp_ptr - tp_addr;
 }
+
 
 static bool
 is_asm_relocation_space_full(uint8_t curr_patch_size)

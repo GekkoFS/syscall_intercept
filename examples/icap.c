@@ -49,7 +49,6 @@ static int hook(long syscall_number,
 	(void) arg3;
 	(void) arg4;
 	(void) arg5;
-	struct wrapper_ret ret;
 
 	if (syscall_number == SYS_write) {
 		char buf_copy[0x1000];
@@ -65,8 +64,7 @@ static int hook(long syscall_number,
 			if (buf_copy[i] == 'i')
 				buf_copy[i] = 'I';
 		}
-		ret = syscall_no_intercept(SYS_write, arg0, buf_copy, size);
-		*result = ret.a0;
+		*result = syscall_no_intercept(SYS_write, arg0, buf_copy, size);
 		return 0;
 	}
 	return 1;

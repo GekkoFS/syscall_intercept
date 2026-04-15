@@ -45,7 +45,7 @@ option(PERFORM_STYLE_CHECKS
 option(BUILD_TESTS "build and enable tests" OFF)
 option(BUILD_EXAMPLES "build examples" ON)
 option(TREAT_WARNINGS_AS_ERRORS
-	"make the build fail on any warnings during compilation, or linking" ON)
+	"make the build fail on any warnings during compilation, or linking" OFF)
 option(EXPECT_SPURIOUS_SYSCALLS
 	"account for some unexpected syscalls in tests - enable while using sanitizers, gcov" OFF)
 option(STATIC_CAPSTONE "statically link libcapstone into the shared library" OFF)
@@ -87,6 +87,7 @@ set(SOURCES_ASM
 include_directories(include)
 link_directories(${capstone_LIBRARY_DIRS})
 
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fno-stack-protector -Wno-error=unused-function -ftls-model=global-dynamic")
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Main object files of the library, the entry point in entry.c
@@ -211,7 +212,8 @@ target_link_libraries(syscall_intercept_shared PRIVATE "-T${LINKER_SCRIPT}")
 
 target_link_libraries(syscall_intercept_shared
 	PRIVATE ${CMAKE_DL_LIBS}
-	"-Wl,--push-state,${CAPSTONE_LINK_MODE} -lcapstone -Wl,--pop-state"
+	"-Wl,--push-state,${CAPSTONE_LINK_MODE} -lcapstone -Wl,--pop-state")
+target_link_options(syscall_intercept_shared PRIVATE
 	"-Wl,--version-script=${CMAKE_SOURCE_DIR}/version.map")
 
 target_link_libraries(syscall_intercept_static

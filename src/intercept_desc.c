@@ -526,6 +526,7 @@ fill_up_patch(struct intercept_desc *desc, struct patch_desc *patch,
 
 	patch->syscall_offset = (uint64_t)syscall_offset;
 	patch->syscall_idx = syscall_idx;
+	patch->a7_source_reg = surr[syscall_idx].a7_source_reg;
 }
 
 /*
@@ -616,6 +617,7 @@ crawl_text(struct intercept_desc *desc)
 
 		if (is_not_filtered(desc, surr)) {
 			struct patch_desc *patch = add_new_patch(desc);
+			patch->syscall_num = TYPE_MID;
 			fill_up_patch(desc, patch, surr, i);
 		}
 	}

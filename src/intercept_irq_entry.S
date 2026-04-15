@@ -51,12 +51,12 @@
 	.equ	CONTEXT_SIZE, (NR_GPR + NR_FPR) * 8
 
 
-	/* Macros */
 	// load TLS symbol address into \reg
+	// Uses the manual offset table to avoid TPREL relocations.
 	.macro LASYMT reg, sym
-	999999:	auipc	\reg, %tls_ie_pcrel_hi(\sym)
-		ld	\reg, %pcrel_lo(999999b)(\reg)	// get the offset from GOT
-		add	\reg, \reg, tp			// add the offset to tp
+		la	\reg, off_\sym
+		ld	\reg, 0(\reg)	// load the pre-calculated offset
+		add	\reg, \reg, tp	// add the offset to tp
 	.endm
 	// store a register in the TLS symbol using \tmp_reg to hold the address
 	.macro SDSYMT reg, sym, tmp_reg
@@ -705,27 +705,4 @@ reloc_instrs_addr_shr:
 	.zero	8
 
 
-	.section .tdata
-	.balign	4
-	.local	lock_TLS
-lock_TLS:
-	.4byte	0
-
-
 	/* .tbss is used for multithreading */
-	.balign	8
-	.section .tbss
-	.global	asm_ra_orig
-	.hidden	asm_ra_orig
-	.global	asm_ra_temp
-	.hidden	asm_ra_temp
-	.local	return_address
-	.local	reloc_ra_temp
-asm_ra_orig:
-	.zero	8
-asm_ra_temp:
-	.zero	8
-return_address:
-	.zero	8
-reloc_ra_temp:
-	.zero	8

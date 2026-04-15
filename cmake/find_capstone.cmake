@@ -44,10 +44,11 @@ if(capstone_FOUND)
 
 	# find capstone.h inside of available paths
 	find_path(capstone_dir capstone.h PATHS ${capstone_paths} REQUIRED NO_DEFAULT_PATH)
-	message(STATUS "Found capstone.h in: ${capstone_dir}")
+	get_filename_component(capstone_parent_dir "${capstone_dir}" DIRECTORY)
+	message(STATUS "Found capstone.h in: ${capstone_dir}, using parent: ${capstone_parent_dir}")
 
-	# set capstone_CFLAGS with only one directory containing capstone.h
-	set(capstone_CFLAGS "-I${capstone_dir}")
+	# set capstone_CFLAGS with the parent directory so that <capstone/capstone.h> works
+	set(capstone_CFLAGS "-I${capstone_parent_dir}")
 
 	unset(capstone_paths)
 	unset(capstone_dir)
