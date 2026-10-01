@@ -575,7 +575,13 @@ crawl_text(struct intercept_desc *desc)
 		result = intercept_disasm_next_instruction(context, code);
 
 		if (result.length == 0) {
-			++code;
+			/* Keep RISC-V instruction alignment when Capstone does not
+			 * support an instruction. Never relocate across this gap.
+			 */
+			memset(surr, 0, sizeof(surr));
+			if (code + 1 > desc->text_end)
+				break;
+			code += (code[0] & 3) == 3 ? 4 : 2;
 			continue;
 		}
 

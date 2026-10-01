@@ -613,6 +613,7 @@ store_new_ra_temp(void)
 				(int32_t)tls_offset_table.asm_ra_temp);
 
 	memcpy(cur_asm_relocation_space, instrs_buff, instrs_size);
+	cur_asm_relocation_space += instrs_size;
 }
 
 	/*
@@ -837,73 +838,25 @@ create_patch(struct intercept_desc *desc)
 			patch->return_register = REG_RA;
 
 		} else if (near_text_end || !is_SML_patchable(patch, length)) {
-			// SML failed. Check for GOT fallback or Mini Trampoline.
-			bool patched = false;
+			/* No safe gateway or small patch fits. Do not use text-hole
+			 * trampolines: their entry does not preserve the patch context,
+			 * and assigning a gateway below overwrites their patch site.
+			 */
+			char buffer[0x1000];
 
+			int l = snprintf(buffer, sizeof(buffer),
+				"unintercepted syscall at: %s 0x%lx\n",
+				desc->path,
+				patch->syscall_offset);
 
-			
-			if (!patched) {
-                // No GOT or GOT logic failed. Try Mini Trampoline.
-                // Especially important if invalid GP.
-                if (find_usable_text_hole(desc, patch->syscall_addr, 10)) {
-                    patch->syscall_num = TYPE_MINI_TRAMP;
-                    patch->got_entry_addr = find_usable_text_hole(desc, patch->syscall_addr, 10);
-                    patch->return_register = REG_RA;
-                    position_patch(patch);
-                    patched = true;
-                    
-
-                } else if (!desc->gp_value) {
-                    // No GP for GOT, No Hole for MINI_TRAMP.
-                    // Cannot use INPLACE (likely > 1MB).
-                    // Explicitly remove patch.
-                    // char buffer[256];
-                    // int l = snprintf(buffer, sizeof(buffer),
-                    //    "DEBUG: Removing unpatchable syscall at %lx (No GP, No Hole)\n",
-                    //    patch->syscall_offset);
-                    // syscall_no_intercept(SYS_write, 2, buffer, l);
-
-                    free(patch->surrounding_instrs);
-                    size_t num_to_move = desc->count - patch_i - 1;
-                    if (num_to_move > 0)
-                        memmove(patch, patch + 1, num_to_move * sizeof(*patch));
-                    desc->count--;
-                    patch_i--;
-                    continue;
-                }
-                // If MINI_TRAMP failed but GP exists (shouldn't happen here due to checks), fall through.
-                // Or if logic changes.
-			}
-			
-			if (!patched) {
-                // Try In-Place (overwriting prev + ecall).
-                // Requires patchable_size >= 6 (2+4 bytes minimum) and a7_source_reg >= 0.
-                if (length >= 6 && patch->a7_source_reg >= 0) {
-                     patch->syscall_num = TYPE_INPLACE;
-                     // We use c.jalr which sets RA. So return reg is RA.
-                     patch->return_register = REG_A7; 
-                     position_patch(patch);
-                     patched = true;
-                }
-            }
-
-			if (!patched) {
-				char buffer[0x1000];
-
-				int l = snprintf(buffer, sizeof(buffer),
-					"unintercepted syscall at: %s 0x%lx\n",
-					desc->path,
-					patch->syscall_offset);
-
-				intercept_log(buffer, (size_t)l);
-				free(patch->surrounding_instrs);
-				size_t num_to_move = desc->count - patch_i - 1;
-				if (num_to_move > 0)
-					memmove(patch, patch + 1, num_to_move * sizeof(*patch));
-				desc->count--;
-				patch_i--;
-				continue;
-			}
+			intercept_log(buffer, (size_t)l);
+			free(patch->surrounding_instrs);
+			size_t num_to_move = desc->count - patch_i - 1;
+			if (num_to_move > 0)
+				memmove(patch, patch + 1, num_to_move * sizeof(*patch));
+			desc->count--;
+			patch_i--;
+			continue;
 		}
 if (patch->syscall_num != TYPE_GW || desc->uses_trampoline)
 			if (patch->syscall_num != TYPE_MINI_TRAMP && patch->syscall_num != TYPE_INPLACE)
