@@ -562,6 +562,10 @@ crawl_text(struct intercept_desc *desc)
 	 * appears at the beginning or at the end of the .text section.
 	 */
 	struct intercept_disasm_result surr[SURROUNDING_INSTRS_NUM] = {{0}};
+	for (uint8_t i = 0; i < instrs_num; ++i) {
+		surr[i].a7_set = -1;
+		surr[i].a7_source_reg = -1;
+	}
 
 	struct intercept_disasm_context *context =
 	    intercept_disasm_init(desc->text_start, desc->text_end);
@@ -579,6 +583,10 @@ crawl_text(struct intercept_desc *desc)
 			 * support an instruction. Never relocate across this gap.
 			 */
 			memset(surr, 0, sizeof(surr));
+			for (uint8_t i = 0; i < instrs_num; ++i) {
+				surr[i].a7_set = -1;
+				surr[i].a7_source_reg = -1;
+			}
 			if (code + 1 > desc->text_end)
 				break;
 			code += (code[0] & 3) == 3 ? 4 : 2;

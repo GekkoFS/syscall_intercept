@@ -355,6 +355,10 @@ check_surrounding_instructions(struct intercept_desc *desc,
 	uint8_t patchable_size = 0;
 	
 	patch->a7_source_reg = -1;
+	/* A zero-filled patch is not evidence for SYS_io_setup (number 0).
+	 * Require a decoded assignment before choosing a static small patch.
+	 */
+	patch->syscall_num = -1;
 
 	// check if the instruction after the ecall sets a register
 	if (instrs[syscall_idx + 1].reg_set)
