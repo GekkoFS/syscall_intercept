@@ -48,6 +48,14 @@
 #include <syscall.h>
 #include "capstone_wrapper.h"
 
+#if CS_API_MAJOR >= 6 && !defined(CAPSTONE_AARCH64_COMPAT_HEADER)
+#define INTERCEPT_CS_ARCH_AARCH64 CS_ARCH_AARCH64
+#define INTERCEPT_CS_INS_SVC AARCH64_INS_SVC
+#else
+#define INTERCEPT_CS_ARCH_AARCH64 CS_ARCH_ARM64
+#define INTERCEPT_CS_INS_SVC ARM64_INS_SVC
+#endif
+
 struct intercept_disasm_context {
 	csh handle;
 	cs_insn *insn;
@@ -81,16 +89,6 @@ nop_vsnprintf()
 struct intercept_disasm_context *
 intercept_disasm_init(const unsigned char *begin, const unsigned char *end)
 {
-	const struct {
-		cs_arch arch;
-		cs_mode mode;
-	} all_archs[] = {
-		{ CS_ARCH_ARM, CS_MODE_LITTLE_ENDIAN },
-		{ CS_ARCH_ARM, CS_MODE_BIG_ENDIAN },
-		{ CS_ARCH_X86, CS_MODE_64 },
-	};
-	const size_t nr_all_archs = sizeof(all_archs) / sizeof(all_archs[0]);
-	size_t i;
 	struct intercept_disasm_context *context;
 
 	context = xmmap_anon(sizeof(*context));
@@ -101,17 +99,10 @@ intercept_disasm_init(const unsigned char *begin, const unsigned char *end)
 	 * Initialize the disassembler.
 	 * The handle here must be passed to capstone each time it is used.
 	 */
-	for (i = 0; i < nr_all_archs; i++) {
-		enum cs_err res = cs_open(all_archs[i].arch,
-				all_archs[i].mode,
-				&context->handle);
-		if (res == CS_ERR_OK) {
-			break;
-		}
-	}
-	if (i == nr_all_archs) {
+	/* Decode the native AArch64 instruction stream, never ARM32 or x86. */
+	if (cs_open(INTERCEPT_CS_ARCH_AARCH64, CS_MODE_LITTLE_ENDIAN,
+	    &context->handle) != CS_ERR_OK)
 		xabort("cs_open");
-	}
 
 	/*
 	 * Kindly ask capstone to return some details about the instruction.
@@ -177,7 +168,7 @@ intercept_disasm_next_instruction(struct intercept_disasm_context *context,
 	assert(result.length != 0);
 	assert((result.length % INSTRUCTION_SIZE) == 0);
 
-	result.is_syscall = (context->insn->id == ARM_INS_SVC);
+	result.is_syscall = (context->insn->id == INTERCEPT_CS_INS_SVC);
 	result.is_set = true;
 
 	return result;
